@@ -1,0 +1,608 @@
+---
+title: "5610 LCA"
+author: "Haoyu Zhang"
+date: "2024-08-22"
+output: pdf_document
+---
+
+
+```{r pkg,include=FALSE,message=F,warning=F}
+# setting up the environment
+library(knitr)
+library(htmltools)
+library(tinytex)
+library(dplyr)
+library(tidyverse)
+library(tidyr)
+library(readr)
+library(haven)
+library(ggplot2)
+library(reshape2)
+library(gridExtra)
+library(survival)
+library(data.table)
+library(purrr)
+library(skimr)
+library(tableone)
+library(poLCA)
+# package 'poLCA' contains function 'MASS::select()', conflicting with 'dplyr::select()' under package 'dplyr'. Hence, we mask MASS::select explicitly, and set 'dplyr::select' as default.
+select <- dplyr::select
+library(reshape2)
+library(ggrepel)
+```
+
+
+```{r import_clean_data, include=F, message=F, warning=F}
+case <- read_csv("C:/Users/user/Desktop/PHBH5610/case")
+control <- read_csv("C:/Users/user/Desktop/PHBH5610/control_3994")
+```
+
+
+```{r LCA_case, echo=F, message=F, warning=F}
+set.seed(1004733808)
+
+# Latent class analysis on patterns of co-morbidity among cases
+# make the categorical variables factors
+
+varsToFactor <- c('bmi', 'marital', 'smoke', 'area_residence', 'qualification', 'income',
+                  'diabetes_his', 'hypertension_his', 'heart_disease_his', 'low_iron_his',
+                  'osteoporosis_his', 'stroke_his', 'thrombosis_his', 'asthma_his', 
+                  'arthritis_his', 'bronchitis_his', 'breast_cancer','cervical_cancer', 
+                  'lung_cancer', 'bowel_cancer', 'other_cancer', 'country_of_birth')
+case[varsToFactor] <- lapply(case[varsToFactor], factor)
+
+# list the factors to check in LCA
+f <- cbind(arthritis_his, asthma_his, bronchitis_his, diabetes_his, hypertension_his, heart_disease_his, osteoporosis_his, stroke_his, thrombosis_his) ~ 1
+
+case_lca_2 <- poLCA(f, case, nclass = 2, verbose = F) 
+#', verbose = F' to show/hide results
+case_lca_3 <- poLCA(f, case, nclass = 3, verbose = F)
+case_lca_4 <- poLCA(f, case, nclass = 4, verbose = F)
+case_lca_5 <- poLCA(f, case, nclass = 5, verbose = T)
+case_lca_6 <- poLCA(f, case, nclass = 6, verbose = F)
+case_lca_7 <- poLCA(f, case, nclass = 7, verbose = F)
+case_lca_8 <- poLCA(f, case, nclass = 8, verbose = F)
+case_lca_9 <- poLCA(f, case, nclass = 9, verbose = F)
+```
+
+
+```{r LCA_case_entropy_calculation}
+# Calculate entropy for 2 classes
+post_p <- case_lca_2$posterior
+entropy_i <- apply(post_p, 1, function(p) {
+  -sum(p * log(p))
+})
+entropy <- mean(entropy_i, na.rm = TRUE)
+print(round(entropy, digits = 2))
+
+# Calculate entropy for 3 classes
+post_p <- case_lca_3$posterior
+entropy_i <- apply(post_p, 1, function(p) {
+  -sum(p * log(p))
+})
+entropy <- mean(entropy_i, na.rm = TRUE)
+print(round(entropy, digits = 2))
+
+# Calculate entropy for 4 classes
+post_p <- case_lca_4$posterior
+entropy_i <- apply(post_p, 1, function(p) {
+  -sum(p * log(p))
+})
+entropy <- mean(entropy_i, na.rm = TRUE)
+print(round(entropy, digits = 2))
+
+# Calculate entropy for 5 classes
+post_p <- case_lca_5$posterior
+entropy_i <- apply(post_p, 1, function(p) {
+  -sum(p * log(p))
+})
+entropy <- mean(entropy_i, na.rm = TRUE)
+print(round(entropy, digits = 2))
+
+# Calculate entropy for 6 classes
+post_p <- case_lca_6$posterior
+entropy_i <- apply(post_p, 1, function(p) {
+  -sum(p * log(p))
+})
+entropy <- mean(entropy_i, na.rm = TRUE)
+print(round(entropy, digits = 2))
+
+# Calculate entropy for 7 classes
+post_p <- case_lca_7$posterior
+entropy_i <- apply(post_p, 1, function(p) {
+  -sum(p * log(p))
+})
+entropy <- mean(entropy_i, na.rm = TRUE)
+print(round(entropy, digits = 2))
+
+# Calculate entropy for 8 classes
+post_p <- case_lca_8$posterior
+entropy_i <- apply(post_p, 1, function(p) {
+  -sum(p * log(p))
+})
+entropy <- mean(entropy_i, na.rm = TRUE)
+print(round(entropy, digits = 2))
+
+# Calculate entropy for 9 classes
+post_p <- case_lca_9$posterior
+entropy_i <- apply(post_p, 1, function(p) {
+  -sum(p * log(p))
+})
+entropy <- mean(entropy_i, na.rm = TRUE)
+print(round(entropy, digits = 2))
+
+ 
+# sort the 
+fit_stats <- data.frame(
+  Classes = c(2, 3, 4, 5, 6, 7, 8, 9),
+  AIC = c(case_lca_2$aic, case_lca_3$aic, case_lca_4$aic, case_lca_5$aic, case_lca_6$aic, 
+          case_lca_7$aic, case_lca_8$aic, case_lca_9$aic),
+  BIC = c(case_lca_2$bic, case_lca_3$bic, case_lca_4$bic, case_lca_5$bic, case_lca_6$bic, 
+          case_lca_7$bic, case_lca_8$bic, case_lca_9$bic),
+  G_squared = c(case_lca_2$G, case_lca_3$G, case_lca_4$G, case_lca_5$G, case_lca_6$G, 
+          case_lca_7$G, case_lca_8$G, case_lca_9$G),
+  Entropy = c(0.14, 0.35, 0.50, 0.61, 0.49, 0.25, 0.29, 0.34)
+)
+```
+
+
+```{r case_LCA_membership_distribution_pie, echo=F, message=F, warning=F}
+plot_pie_class_membership_ggplot <- function(model) {
+  # Calculate class membership proportions
+  class_membership <- prop.table(table(model$predclass))
+  class_membership_df <- as.data.frame(class_membership)
+  colnames(class_membership_df) <- c("Class", "Proportion")
+  
+  # Add percentage labels
+  class_membership_df <- class_membership_df %>%
+    mutate(Percentage = scales::percent(Proportion, accuracy = 1))
+  
+  # Count the number of classes
+  num_classes <- length(class_membership_df$Class)
+  
+  # Choose a color palette with better contrast
+  colors <- c("#66c2a5", "#fc8d62", "#8da0cb", "#e78ac3", "#a6d854", "#ffd92f", "#e5c494", "#b3b3b3", 'steelblue','lightcoral')
+  
+  # Create the pie chart using ggplot2
+  p <- ggplot(class_membership_df, aes(x = "", y = Proportion, fill = factor(Class))) +
+    geom_bar(stat = "identity", width = 1, color = "white") +
+    coord_polar(theta = "y") +
+    geom_text(aes(label = Percentage), position = position_stack(vjust = 0.5), color = "black", size = 4) +
+    scale_fill_manual(values = colors[1:num_classes], 
+                      name = "Latent Class", labels = paste("C", class_membership_df$Class, sep="")) +
+    theme_void() +
+    labs(title = paste("Membership Distribution for", num_classes, "Classes"))
+  
+  # Return the plot
+  return(p)
+}
+
+# Example usage for multiple models
+plots <- list(
+  plot_pie_class_membership_ggplot(case_lca_4),
+  plot_pie_class_membership_ggplot(case_lca_5),
+  plot_pie_class_membership_ggplot(case_lca_6),
+  plot_pie_class_membership_ggplot(case_lca_7)
+)
+
+# Arrange the plots in a grid
+grid.arrange(grobs = plots, ncol = 2)  # Adjust ncol based on how many plots you have
+```
+
+
+```{r case_4_class_condition_distribution, echo=F, message=F, warning=F}
+# Function to plot class distribution for any LCA model
+plot_class_distributions <- function(lca_model, data, parameters) {
+  
+  # Extract class membership from the LCA model
+  class_assignments <- lca_model$predclass
+  
+  # Add class assignments to the original data
+  data_with_classes <- data %>% 
+    mutate(class = class_assignments)
+  
+  # Determine the number of classes
+  num_classes <- length(unique(class_assignments))
+  
+  # Function to create a plot for a specific class
+  plot_class_distribution <- function(class_number) {
+    
+    # Filter data for the specific class
+    class_data <- data_with_classes %>% filter(class == class_number)
+    
+    # Calculate percentages for each parameter
+    class_data_long <- class_data %>%
+      select(all_of(parameters)) %>%
+      pivot_longer(cols = everything(), names_to = "Parameter", values_to = "Value") %>%
+      group_by(Parameter, Value) %>%
+      summarise(Count = n(), .groups = "drop") %>%
+      mutate(Percent = Count / sum(Count) * 100)
+    
+    # Create the stacked bar chart
+    ggplot(class_data_long, aes(x = Parameter, y = Percent, fill = factor(Value))) +
+      geom_bar(stat = "identity", position = "fill", width = 0.7) +
+      scale_fill_manual(values = c("#ffcc80", "#ff8a65"), name = "Value") +
+      coord_flip() +
+      labs(title = paste("Class", class_number, "Distribution"),
+           y = "Percent", x = "") +
+      theme_minimal() +
+      theme(
+        legend.position = "none",
+        axis.title = element_text(size = 12),
+        axis.text = element_text(size = 8)
+      )
+  }
+  
+  # Generate plots for all classes and return as a list
+  plots <- lapply(1:num_classes, plot_class_distribution)
+  return(plots)
+}
+
+# Example parameters (replace with your actual parameter names)
+parameters <- c("arthritis_his", "asthma_his", "bronchitis_his", "diabetes_his",
+                "hypertension_his", "heart_disease_his",
+                "osteoporosis_his", "stroke_his", "thrombosis_his")
+
+# Apply to a specific LCA model and plot results
+plots <- plot_class_distributions(case_lca_4, case, parameters)
+grid.arrange(grobs = plots, ncol = 2)
+
+# Apply to another LCA model and plot results
+plots <- plot_class_distributions(case_lca_5, case, parameters)
+grid.arrange(grobs = plots[1:4], ncol = 2)
+# Display the remaining plot centered in a 2x2 grid
+grid.arrange(plots[[5]], ncol = 2, nrow = 2)
+```
+
+
+```{r case_class_num_condition_d, echo= F, message=F, warning=F}
+# Extract class membership
+class_assignments <- case_lca_4$predclass
+# Add class assignments to the original data
+df <- cbind(case, class = class_assignments)
+# subset of cases in the assigned class
+temp <- subset(df, class == 1)
+
+# Distribution of number of co-morbidity among non-cancer patients
+class1_d_num_comorb <- ggplot(temp, aes(x = num_comorb)) +
+  geom_histogram(aes(y = after_stat(density)), binwidth = 1, fill = "steelblue", color = "white", alpha = 1.0) +
+  scale_x_continuous(breaks = seq(0, max(temp$num_comorb, na.rm = TRUE), by = 1)) +  # Set x-axis to whole numbers
+  labs(title = "Class 1; n = 61", x = "Number of Comorbidity", y = "Count") +
+  theme_minimal() +
+  theme(
+    panel.grid.major = element_line(color = "grey80"),
+    panel.grid.minor = element_line(color = "grey90"),
+    plot.title = element_text(size = 14, face = "bold")
+  )
+# Calculate the frequency tables
+hits_data <- ggplot_build(class1_d_num_comorb)$data[[1]]
+total_count <- sum(hits_data$count, na.rm = TRUE)
+hits_data <- hits_data %>%
+  mutate(
+    count_label = count,
+    percent_label = paste0(round((count / total_count) * 100, 2), "%")
+  )
+# Add text labels for counts and percentages
+class1_d_num_comorb <- class1_d_num_comorb +
+  geom_text(data = hits_data, aes(x = x, y = y, label = count_label), 
+            vjust = -0.5, color = "black", size = 3.5) +
+  geom_text(data = hits_data, aes(x = x, y = y, label = percent_label), 
+            vjust = 1, color = "black", size = 3.5)
+
+
+# subset of cases in the assigned class
+temp <- subset(df, class == 2)
+# Distribution of number of co-morbidity among non-cancer patients
+class2_d_num_comorb <- ggplot(temp, aes(x = num_comorb)) +
+  geom_histogram(aes(y = after_stat(density)), binwidth = 1, fill = "steelblue", color = "white", alpha = 1.0) +
+  scale_x_continuous(breaks = seq(0, max(temp$num_comorb, na.rm = TRUE), by = 1)) +  # Set x-axis to whole numbers
+  labs(title = "Class 2; n = 1260", x = "Number of Comorbidity", y = "Count") +
+  theme_minimal() +
+  theme(
+    panel.grid.major = element_line(color = "grey80"),
+    panel.grid.minor = element_line(color = "grey90"),
+    plot.title = element_text(size = 14, face = "bold")
+  )
+# Calculate the frequency tables
+hits_data <- ggplot_build(class2_d_num_comorb)$data[[1]]
+total_count <- sum(hits_data$count, na.rm = TRUE)
+hits_data <- hits_data %>%
+  mutate(
+    count_label = count,
+    percent_label = paste0(round((count / total_count) * 100, 2), "%")
+  )
+# Add text labels for counts and percentages
+class2_d_num_comorb <- class2_d_num_comorb +
+  geom_text(data = hits_data, aes(x = x, y = y, label = count_label), 
+            vjust = -0.5, color = "black", size = 3.5) +
+  geom_text(data = hits_data, aes(x = x, y = y, label = percent_label), 
+            vjust = 1, color = "black", size = 3.5)
+
+# subset of cases in the assigned class
+temp <- subset(df, class == 3)
+# Distribution of number of co-morbidity among non-cancer patients
+class3_d_num_comorb <- ggplot(temp, aes(x = num_comorb)) +
+  geom_histogram(aes(y = after_stat(density)), binwidth = 1, fill = "steelblue", color = "white", alpha = 1.0) +
+  scale_x_continuous(breaks = seq(0, max(temp$num_comorb, na.rm = TRUE), by = 1)) +  # Set x-axis to whole numbers
+  labs(title = "Class 3; n = 421", x = "Number of Comorbidity", y = "Count") +
+  theme_minimal() +
+  theme(
+    panel.grid.major = element_line(color = "grey80"),
+    panel.grid.minor = element_line(color = "grey90"),
+    plot.title = element_text(size = 14, face = "bold")
+  )
+# Calculate the frequency tables
+hits_data <- ggplot_build(class3_d_num_comorb)$data[[1]]
+total_count <- sum(hits_data$count, na.rm = TRUE)
+hits_data <- hits_data %>%
+  mutate(
+    count_label = count,
+    percent_label = paste0(round((count / total_count) * 100, 2), "%")
+  )
+# Add text labels for counts and percentages
+class3_d_num_comorb <- class3_d_num_comorb +
+  geom_text(data = hits_data, aes(x = x, y = y, label = count_label), 
+            vjust = -0.5, color = "black", size = 3.5) +
+  geom_text(data = hits_data, aes(x = x, y = y, label = percent_label), 
+            vjust = 1, color = "black", size = 3.5)
+
+
+# subset of cases in the assigned class
+temp <- subset(df, class == 4)
+# Distribution of number of co-morbidity among non-cancer patients
+class4_d_num_comorb <- ggplot(temp, aes(x = num_comorb)) +
+  geom_histogram(aes(y = after_stat(density)), binwidth = 1, fill = "steelblue", color = "white", alpha = 1.0) +
+  scale_x_continuous(breaks = seq(0, max(temp$num_comorb, na.rm = TRUE), by = 1)) +  # Set x-axis to whole numbers
+  labs(title = "Class 4; n = 255", x = "Number of Comorbidity", y = "Count") +
+  theme_minimal() +
+  theme(
+    panel.grid.major = element_line(color = "grey80"),
+    panel.grid.minor = element_line(color = "grey90"),
+    plot.title = element_text(size = 14, face = "bold")
+  )
+# Calculate the frequency tables
+hits_data <- ggplot_build(class4_d_num_comorb)$data[[1]]
+total_count <- sum(hits_data$count, na.rm = TRUE)
+hits_data <- hits_data %>%
+  mutate(
+    count_label = count,
+    percent_label = paste0(round((count / total_count) * 100, 2), "%")
+  )
+# Add text labels for counts and percentages
+class4_d_num_comorb <- class4_d_num_comorb +
+  geom_text(data = hits_data, aes(x = x, y = y, label = count_label), 
+            vjust = -0.5, color = "black", size = 3.5) +
+  geom_text(data = hits_data, aes(x = x, y = y, label = percent_label), 
+            vjust = 1, color = "black", size = 3.5)
+
+ grid.arrange(class1_d_num_comorb, class2_d_num_comorb, class3_d_num_comorb, class4_d_num_comorb, ncol=2)
+
+rm(class1_d_num_comorb, class2_d_num_comorb, class3_d_num_comorb, class4_d_num_comorb, hist_data, temp, df, class_assignments)
+```
+
+
+```{r case_class_demo, echo = F, message=F, warning=F}
+# Extract class membership
+class_assignments <- case_lca_4$predclass
+# Add class assignments to the original data
+df <- cbind(case, class = class_assignments)
+
+# specify the columns to put into table1
+columns_to_check <- c('age', 'bmi', 'country_of_birth', 'marital', 'smoke', 'area_residence', 'qualification', 'income', 'gh', 'pf', 'mh')
+
+# subset of cases in the assigned class
+temp <- subset(df, class == 1)
+# the demographics table
+table1 <- CreateTableOne(vars = columns_to_check, data = temp)
+table1
+
+temp <- subset(df, class == 2)
+# the table1
+table1 <- CreateTableOne(vars = columns_to_check, data = temp)
+table1
+
+temp <- subset(df, class == 3)
+# the table1
+table1 <- CreateTableOne(vars = columns_to_check, data = temp)
+table1
+
+temp <- subset(df, class == 4)
+# the table1
+table1 <- CreateTableOne(vars = columns_to_check, data = temp)
+table1
+```
+
+
+```{r case_LCA_cancer dist, , echo=F, message=F, warning=F}
+# at this point, we have decided to use 4 class LCA model so we continue on 
+# with the case_lca_4 model
+rm(case_lca_2, case_lca_3, case_lca_6, case_lca_7, case_lca_8, case_lca_9)
+
+# Extract class membership
+# case <- read_csv("C:/Users/user/Desktop/PHBH5610/case", show_col_types = FALSE)
+# class_assignments <- case_lca_4$predclass
+# Add class assignments to the original data
+# case <- cbind(case, class = class_assignments)
+# write_csv(case, 'case_class_4')
+
+case <- read_csv("C:/Users/user/Desktop/PHBH5610/case", show_col_types = FALSE)
+class_assignments <- case_lca_5$predclass
+case <- cbind(case, class = class_assignments)
+write_csv(case, 'case_class_5')
+```
+
+
+```{r cancer_distribution, echo = F, message = F, warning = F}
+# Reshape the data from wide to long format
+case_long <- tidyr::pivot_longer(case, 
+               cols = c(breast_cancer, cervical_cancer, bowel_cancer, 
+                        lung_cancer, other_cancer), 
+               names_to = "cancer_type", 
+               values_to = "has_cancer")
+
+# Remove rows with NA values in 'has_cancer' column
+case_long <- case_long %>%
+  filter(!is.na(has_cancer))
+
+# Calculate counts and percentages for has_cancer = 1
+plot_data <- case_long %>%
+  group_by(class, cancer_type, has_cancer) %>%
+  summarise(count = n()) %>%
+  group_by(class, cancer_type) %>%
+  mutate(total = sum(count),
+         percentage = 100 * count / total) %>%
+  filter(has_cancer == 1)  # Focus on has_cancer = 1
+
+# Loop over each class and create separate plots
+classes <- unique(case_long$class)
+
+for (class_level in classes) {
+  # Filter data for this specific class
+  class_data <- case_long %>% filter(class == class_level)
+  class_plot_data <- plot_data %>% filter(class == class_level)
+  
+  # Create the plot
+  p <- ggplot(class_data, aes(x = cancer_type, fill = factor(has_cancer))) +
+    geom_bar(position = "dodge") +
+    geom_text(data = class_plot_data, 
+              aes(x = cancer_type, y = count, 
+                  label = paste0(count, " (", round(percentage, 1), "%)")),
+              position = position_dodge(width = 0.9),
+              vjust = -0.5) +
+    labs(title = paste("Distribution of Cancer Types for Class", class_level),
+         x = "Cancer Type",
+         y = "Count",
+         fill = "Has Cancer (0=No, 1=Yes)") +
+    theme_minimal()
+  
+  # Print the plot for the current class
+  # print(p)
+}
+```
+
+```{r cancer_distribution_4_class, echo = F, message = F, warning = F}
+# Reshape the data from wide to long format
+case_long <- tidyr::pivot_longer(case, 
+               cols = c(breast_cancer, cervical_cancer, bowel_cancer, 
+                        lung_cancer, other_cancer), 
+               names_to = "cancer_type", 
+               values_to = "has_cancer")
+
+# Remove rows with NA values in 'has_cancer' column
+case_long <- case_long %>%
+  filter(!is.na(has_cancer))
+
+# Calculate counts and percentages for has_cancer = 1
+plot_data <- case_long %>%
+  group_by(class, cancer_type, has_cancer) %>%
+  summarise(count = n()) %>%
+  group_by(class, cancer_type) %>%
+  mutate(total = sum(count),
+         percentage = 100 * count / total) %>%
+  filter(has_cancer == 1)  # Focus on has_cancer = 1
+
+# Loop over each class and create separate plots
+classes <- unique(case_long$class)
+
+for (class_level in classes) {
+  # Filter data for this specific class
+  class_data <- case_long %>% filter(class == class_level)
+  class_plot_data <- plot_data %>% filter(class == class_level)
+  
+  # Create the plot
+  p <- ggplot(class_data, aes(x = cancer_type, fill = factor(has_cancer))) +
+    geom_bar(position = "dodge") +
+    geom_text(data = class_plot_data, 
+              aes(x = cancer_type, y = count, 
+                  label = paste0(count, " (", round(percentage, 1), "%)")),
+              position = position_dodge(width = 0.9),
+              vjust = -0.5) +
+    labs(title = paste("Distribution of Cancer Types for Class", class_level),
+         x = "Cancer Type",
+         y = "Count",
+         fill = "Has Cancer (0=No, 1=Yes)") +
+    scale_fill_manual(values = c("0" = "lightblue", "1" = "orange")) + 
+    theme_minimal()+
+    theme(legend.position = "none")
+  
+  # Print the plot for the current class
+  print(p)
+}
+```
+
+
+```{r cancer_distribution_4_class, echo = F, message = F, warning = F}
+# Reshape the data from wide to long format
+case_long <- tidyr::pivot_longer(case, 
+               cols = c(breast_cancer, cervical_cancer, bowel_cancer, 
+                        lung_cancer, other_cancer), 
+               names_to = "cancer_type", 
+               values_to = "has_cancer")
+
+# Remove rows with NA values in 'has_cancer' column
+case_long <- case_long %>%
+  filter(!is.na(has_cancer))
+
+# Calculate counts and percentages for has_cancer = 1
+plot_data <- case_long %>%
+  group_by(cc, cancer_type, has_cancer) %>%
+  summarise(count = n()) %>%
+  group_by(cc, cancer_type) %>%
+  mutate(total = sum(count),
+         percentage = 100 * count / total) %>%
+  filter(has_cancer == 1)  # Focus on has_cancer = 1
+
+# Loop over each class and create separate plots
+classes <- unique(case_long$cc)
+
+for (class_level in classes) {
+  # Filter data for this specific class
+  class_data <- case_long %>% filter(cc == class_level)
+  class_plot_data <- plot_data %>% filter(cc == class_level)
+  
+  # Create the plot with custom colors
+  p <- ggplot(class_data, aes(x = cancer_type, fill = factor(has_cancer))) +
+    geom_bar(position = "dodge") +
+    geom_text(data = class_plot_data, 
+              aes(x = cancer_type, y = count, 
+                  label = paste0(count, " (", round(percentage, 1), "%)")),
+              position = position_dodge(width = 0.9),
+              vjust = -0.5) +
+    labs(title = paste("Distribution of Cancer Types for Class", class_level),
+         x = "Cancer Type",
+         y = "Count",
+         fill = "Has Cancer (0=No, 1=Yes)") +
+    scale_fill_manual(values = c("0" = "lightblue", "1" = "darkred")) +  # Custom colors
+    theme_minimal()+
+    theme(legend.position = "none")
+  
+  # Print the plot for the current class
+  print(p)
+}
+```
+
+
+```{r}
+table(case$class)  # This will show the count of each class in your data
+
+# Calculate proportions for each class
+class_data <- case %>%
+  group_by(class) %>%
+  summarise(Count = n()) %>%
+  mutate(Proportion = Count / sum(Count),  # Calculate the proportion for each class
+         Percentage = paste0(round(Proportion * 100, 1), "%"))  # Convert proportion to percentage
+
+# Print the calculated class data to ensure proportions are correct
+print(class_data)
+
+# Plot the pie chart for the class column
+ggplot(class_data, aes(x = "", y = Proportion, fill = factor(class))) +
+    geom_bar(stat = "identity", width = 1, color = "white") +  # Create bar chart (polar will convert it to pie)
+    coord_polar(theta = "y") +  # Convert to pie chart
+    geom_text(aes(label = Percentage), position = position_stack(vjust = 0.5), color = "black", size = 4) +  # Add percentage labels
+    scale_fill_manual(values = c("#66c2a5", "#fc8d62", "#8da0cb", "lightcoral"), name = "Latent Class", 
+                      labels = paste("C", class_data$class, sep="")) +  # Custom labels
+    theme_void() +  # Clean up the chart by removing axes
+    labs(title = "Membership Distribution by Class")  # Add title
+```
+

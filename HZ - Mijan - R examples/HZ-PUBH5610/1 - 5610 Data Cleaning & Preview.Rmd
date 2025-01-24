@@ -1,0 +1,910 @@
+---
+title: "5610 Data Cleaning"
+author: "Haoyu Zhang"
+date: "2024-08-02"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+
+```{r pkg,include=FALSE,message=F,warning=F}
+# setting up the environment
+library(knitr)
+library(htmltools)
+library(tinytex)
+library(dplyr)
+library(tidyverse)
+library(readr)
+library(haven)
+library(ggplot2)
+library(reshape2)
+library(gridExtra)
+library(survival)
+library(data.table)
+library(purrr)
+library(skimr)
+library(tableone)
+library(poLCA)
+# package 'poLCA' contains function 'MASS::select()', conflicting with 'dplyr::select()' under package 'dplyr'. Hence, we mask MASS::select explicitly, and set 'dplyr::select' as default.
+select <- dplyr::select
+```
+
+
+```{r data_import,include=FALSE,message=F}
+# import data from sas file
+w1 <- read_sas("C:/Users/user/Desktop/PHBH5610/ALSWH_1946-51_sas/ALSWH_1946-51_sas/w1mbf.sas7bdat",NULL)
+w2 <- read_sas("C:/Users/user/Desktop/PHBH5610/ALSWH_1946-51_sas/ALSWH_1946-51_sas/w2mbf.sas7bdat",NULL)
+w3 <- read_sas("C:/Users/user/Desktop/PHBH5610/ALSWH_1946-51_sas/ALSWH_1946-51_sas/w3mbf.sas7bdat",NULL)
+w4 <- read_sas("C:/Users/user/Desktop/PHBH5610/ALSWH_1946-51_sas/ALSWH_1946-51_sas/w4mbf.sas7bdat",NULL)
+w5 <- read_sas("C:/Users/user/Desktop/PHBH5610/ALSWH_1946-51_sas/ALSWH_1946-51_sas/w5mbf.sas7bdat",NULL)
+w6 <- read_sas("C:/Users/user/Desktop/PHBH5610/ALSWH_1946-51_sas/ALSWH_1946-51_sas/w6mbf.sas7bdat",NULL)
+w7 <- read_sas("C:/Users/user/Desktop/PHBH5610/ALSWH_1946-51_sas/ALSWH_1946-51_sas/w7mbf.sas7bdat",NULL)
+w8 <- read_sas("C:/Users/user/Desktop/PHBH5610/ALSWH_1946-51_sas/ALSWH_1946-51_sas/w8mbf.sas7bdat",NULL)
+w9 <- read_sas("C:/Users/user/Desktop/PHBH5610/ALSWH_1946-51_sas/ALSWH_1946-51_sas/w9mbf.sas7bdat",NULL)
+w10 <- read_sas("C:/Users/user/Desktop/PHBH5610/ALSWH_1946-51_sas/ALSWH_1946-51_sas/w10mbf.sas7bdat",NULL)
+klv <- read_sas("C:/Users/user/Desktop/PHBH5610/ALSWH_1946-51_sas/ALSWH_1946-51_sas/klv_1946_51.sas7bdat",NULL)
+# dic <- read_csv("C:/Users/user/Desktop/PHBH5610/ALSWHDD_Linked/Cohort_Survey_Details.csv")
+# master_dic <- read_csv("C:/Users/user/Desktop/PHBH5610/ALSWHDD_Linked/Item_Master.csv")
+
+# merging all data into 1 file
+# follow-ups are merged into the baseline data, all missing data are labelled NA
+data <- full_join(w1,w2,by = 'idproj')
+data <- full_join(data,w3,by = 'idproj')
+data <- full_join(data,w4,by = 'idproj')
+data <- full_join(data,w5,by = 'idproj')
+data <- full_join(data,w6,by = 'idproj')
+data <- full_join(data,w7,by = 'idproj')
+data <- full_join(data,w8,by = 'idproj')
+data <- full_join(data,w9,by = 'idproj')
+data <- full_join(data,w10,by = 'idproj')
+
+# optional remove w1-w10 from environment
+rm(w1,w2,w3,w4,w5,w6,w7,w8,w9,w10)
+```
+
+
+```{r data_cleaning,include=F,message=F}
+## data cleaning chunk 1
+# This chunk includes the following:
+# 1. Modified data structure for w1 and w2 data for medical history only. W2 incidence is validated with w1 information under the logic that, if an observation has reported any diagnosis of a certain disease, and did not report the same disease in w1, she will be marked disease incidence for w2. Note that depression, anxiety, and other psychiatry disorder are not validated.
+# 2. Modified data structure for all waves for diabetes and arthritis. Grouping has been done with the logic that, if an observation has incident t1,t2 or pre-diabetes, she is identified as diabetes incident; if an observation has incident osteoarthritis, rheumatoid arthritis, or other types of arthritis, she is identified as arthritis incident.
+# 3. Identified cancer patients in the baseline w1(excluding skin cancer), indicated by variable 'w1_allc'.
+# 4. Identified the first incidence for each observation with variable 'cancer_first', indicating the primary cancer incidence other than skin cancer 
+# 5. Examined if the cancer cases responded to the survey 1 prior and 1 after to the wave of incidence, indicated by variable 'before_after_check'.
+
+# temporary blank columns for data cleaning
+data$blank <- NA
+data$blank1 <- NA
+data$blank2 <- NA
+data$blank3 <- NA
+data$blank4 <- NA
+data$blank5 <- NA
+data$blank6 <- NA
+data$blank7 <- NA
+data$blank8 <- NA
+
+# create column in main df to indicate if the person has any cancer in w1(excluding skin and other cancers)
+# values 1 = at least one cancer; 0 = no cancer
+columns_to_check <- c("m1q15j","m1q15k","m1q15l","m1q15m")
+data$w1_allc <- apply(data[columns_to_check],1,function(row){
+  if (all(is.na(row))) {
+    return(NA) # Return NA if all values in the row are NA
+  } else if (any(row == 1, na.rm = T)) {
+    return(1) # At least one value is 1
+  } else {
+    return(0) # None of the values are 1
+  }})
+
+### W1 data cleaning____________________________________________________________
+# transform w1 data regarding medical history to keep it consistent with the follow-ups, where 1 = yes, 0 = no
+columns <- c("m1q15a", "m1q15b", "m1q15c", "m1q15d", "m1q15e", "m1q15f", 
+             "m1q15g", "m1q15h", "m1q15i", "m1q15j", "m1q15k", "m1q15l", 
+             "m1q15m", "m1q15n", "m1q15o")
+data <- data %>%
+  mutate(across(all_of(columns), ~ ifelse(is.na(.), NA, ifelse(. == 1, 1, 0))))
+
+### W2 data cleaning____________________________________________________________
+# W2 cleaning for co-morbidity
+# creating new column 'm2q20aa' with binary values 1 = incident diabetes(both type1 and type2), 0 = no incident diabetes; this column combines type1 and type2 diabetes in w2 data
+data$m2q20aa <- with(data, ifelse(is.na(m2q20a) & is.na(m2q20b), NA , ifelse((m2q20a %in% 1:3 | m2q20b %in% 1:3) & m1q15a != 1,1,0)))
+# creating new column 'm2q20cc' with binary values 1 = incident heart disease, 0 = none
+data$m2q20cc <- with(data, ifelse(is.na(m2q20c), NA, ifelse(m2q20c %in% 1:3 & m1q15b != 1,1,0)))
+# creating new column 'm2q20dd' with binary values 1 == incident hypertension, 0 = none
+data$m2q20dd <- with(data, ifelse(is.na(m2q20d), NA, ifelse(m2q20d %in% 1:3 & m1q15c != 1,1,0)))
+# creating new column 'm2q20ee' with binary values 1 == incident stroke, 0 = no incident stroke
+data$m2q20ee <- with(data, ifelse(is.na(m2q20e), NA, ifelse(m2q20e %in% 1:3 & m1q15d != 1,1,0)))
+# creating new column 'm2q20ff' with binary values 1 == incident thrombosis, 0 = none
+data$m2q20ff <- with(data, ifelse(is.na(m2q20f), NA, ifelse(m2q20f %in% 1:3 & m1q15e != 1,1,0)))
+# creating new column 'm2q20gg' with binary values 1 == incident iron deficiency, 0 = none
+data$m2q20gg <- with(data, ifelse(is.na(m2q20g), NA, ifelse(m2q20g %in% 1:3 & m1q15f != 1,1,0)))
+# creating new column 'm2q20hh' with binary values 1 == incident asthma, 0 = none
+data$m2q20hh <- with(data, ifelse(is.na(m2q20h), NA, ifelse(m2q20h %in% 1:3 & m1q15g != 1,1,0)))
+# creating new column 'm2q20ii' with binary values 1 == incident bronchitis_emphysema, 0 = none
+data$m2q20ii <- with(data, ifelse(is.na(m2q20i), NA, ifelse(m2q20i %in% 1:3 & m1q15h != 1,1,0)))
+# creating new column 'm2q20jj' with binary values 1 == incident osteoporosis, 0 = none
+data$m2q20jj <- with(data, ifelse(is.na(m2q20j), NA, ifelse(m2q20j %in% 1:3 & m1q15i != 1,1,0)))
+
+
+# W2 data cleaning for cancer___________________________________________________
+# create new column 'm2q20kk' to indicate incident breast cancer in w2; 1 = reported breast cancer in w2 but not in w1; 0 = otherwise; NA = NA for m2q20k
+data$m2q20kk <- with(data, ifelse(is.na(m2q20k), NA, ifelse(m2q20k %in% 1:3 & m1q15j != 1, 1, 0)))
+# create new column 'm2q20ll' to indicate incident cervical cancer in w2; 1 = reported cervical cancer in w2 but not in w1; 0 = otherwise; NA = NA for m2q20l
+data$m2q20ll <- with(data, ifelse(is.na(m2q20l), NA, ifelse(m2q20l %in% 1:3 & m1q15k != 1, 1, 0)))
+# create new column 'm2q20mm' to indicate incident bowel cancer in w2; 1 = reported bowel cancer in w2 but not in w1; 0 = otherwise; NA = NA for m2q20m
+data$m2q20mm <- with(data, ifelse(is.na(m2q20m), NA, ifelse(m2q20m %in% 1:3 & m1q15m != 1, 1, 0)))
+# create new column 'm2q20nn' to indicate incident skin cancer in w2; 1 = reported skin cancer in w2 but not in w1; 0 = otherwise; NA = NA for m2q20n
+data$m2q20nn <- with(data, ifelse(is.na(m2q20n), NA, ifelse(m2q20n %in% 1:3 & m1q15n != 1, 1, 0)))
+# create new column 'm2q20oo' to indicate incident other cancer in w2; 1 = reported other cancer in w2 but not in w1; 0 = otherwise; NA = NA for m2q20o
+# this line of code has an extra logic check eliminating lung cancer patients in w1 since w2 data does not have an independent column showing lung cancer status
+data$m2q20oo <- with(data, ifelse(is.na(m2q20o), NA, ifelse(m2q20o %in% 1:3 & m1q15o != 1 & m1q15l != 1, 1, 0))) 
+
+
+# W2 data cleaning for mental health____________________________________________
+# create new column 'm2q20pp' to indicate incident depression in w2; 1 = reported depression in the past 2 years when responding to w2 survey; 0 = otherwise; NA = NA for m2q20p
+data$m2q20pp <- with(data, ifelse(is.na(m2q20p), NA, ifelse(m2q20p == 1, 1, 0)))
+# create new column 'm2q20qq' to indicate incident depression in w2; 1 = reported anxiety in the past 2 years when responding to w2 survey; 0 = otherwise; NA = NA for m2q20q
+data$m2q20qq <- with(data, ifelse(is.na(m2q20q), NA, ifelse(m2q20q == 1, 1, 0)))
+# create new column 'm2q2rr' to indicate incident depression in w2; 1 = reported other mental problems in the past 2 years when responding to w2 survey; 0 = otherwise; NA = NA for m2q20r
+data$m2q20rr <- with(data, ifelse(is.na(m2q20r), NA, ifelse(m2q20r == 1, 1, 0)))
+
+
+### General data cleaning_______________________________________________________
+# create new column 'm3q35bb' to indicate incident t1,t2 or pre diabetes in w3; 1 = incident t1, t2, or pre-diabetes in W3; 0 = otherwise; NA = NA for all m3q35b, m3q35c, and m3q35d
+data$m3q35bb <- with(data, ifelse(is.na(m3q35b) & is.na(m3q35c) & is.na(m3q35d), NA, ifelse(m3q35b == 1 | m3q35c == 1 | m3q35d == 1, 1,0)))
+
+# create new column 'm4q32bb' to indicate incident diabetes or pre-diabetes in w4; 1 = incident diabetes or pre-diabetes in W4; 0 = otherwise; NA = NA for both m4q32b and m4q32c
+data$m4q32bb <- with(data, ifelse(is.na(m4q32b) & is.na(m4q32c), NA, ifelse(m4q32b == 1 | m4q32c == 1,1,0)))
+
+# create new column 'm5q38aa' to indicate incident diabetes or pre-diabetes in w5; 1 = incident diabetes or pre-diabetes in w5; 0 = otherwise; NA = NA for both m5q38a and m5q38b
+data$m5q38aa <- with(data, ifelse(is.na(m5q38a) & is.na(m5q38b), NA, ifelse(m5q38a == 1 | m5q38b == 1,1,0)))
+# create new column 'm5q38cc' to indicate incident arthritis in w5; 1 = incident arthritis in w5; 0 = otherwise, NA = NA for all m5q38c, m5q38d, and m5q38e
+data$m5q38cc <- with(data, ifelse(is.na(m5q38c) & is.na(m5q38d) & is.na(m5q38e), NA, ifelse(m5q38c == 1 | m5q38d == 1 | m5q38e == 1,1,0)))
+
+# create new column 'm6diabetes' to indicate incident diabetes or pre-diabetes in w6; 1 = incident diabetes or pre-diabetes in w6; 0 = otherwise; NA = NA for both m6Q38a and m6Q38b
+data$m6diabetes <- with(data, ifelse(is.na(m6Q38a) & is.na(m6Q38b), NA, ifelse(m6Q38a == 1 | m6Q38b == 1,1,0)))
+# create new column 'm6arthritis' to indicate incident arthritis in w6; 1 = incident arthritis in w6; 0 = otherwise; NA = NA for all m6Q38c, m6arthritis, and m6Q38e
+data$m6arthritis <- with(data, ifelse(is.na(m6Q38c) & is.na(m6Q38d) & is.na(m6Q38e), NA, ifelse(m6Q38c == 1 | m6Q38d == 1 | m6Q38e == 1,1,0)))
+
+# create new column 'm7diabetes' to indicate incident diabetes in w7; 1 = incident diabetes or pre-diabetes in w7; 0 = otherwise; NA = NA for m7q32c
+data$m7diabetes <- with(data, ifelse(is.na(m7q32c), NA, ifelse(m7q32c == 0,1,0)))
+# create new column 'm7arthritis' to indicate incident arthritis in w7; 1 = incident arthritis in w7; 0 = otherwise; NA = NA for all m7q32d, m7q32e, and m7q32f
+data$m7arthritis <- with(data, ifelse(is.na(m7q32d) & is.na(m7q32e) & is.na(m7q32f), NA, ifelse(m7q32d == 1 | m7q32e == 1 | m7q32f == 1,1,0)))
+# create new column 'm7sti' to indicate incident STIs in w7; 1 = incident STI in w7; 0 = otherwise; NA = NA for m7q32nn
+data$m7sti <- with(data, ifelse(is.na(m7q32nn), NA, ifelse(m7q32nn == 0,1,0)))
+# create new column 'm7neuro_degen' to indicate incident neuro-degenerative disease in w7; 1 = incident neuro-degenerative disease in w7; 0 = otherwise; NA = NA for m7q32q
+data$m7neuro_degen <- with(data, ifelse(is.na(m7q32q), NA, ifelse(m7q32q == 0,1,0)))
+
+# create new column 'm8diabetes' to indicate incident diabetes or pre-diabetes in w8; 1 = incident diabetes or pre-diabetes in w8; 0 = otherwise; NA = NA for M8Q30c
+data$m8diabetes <- with(data, ifelse(is.na(M8Q30c), NA, ifelse(M8Q30c == 0,1,0)))
+# create new column 'm8arthritis' to indicate incident arthritis in w8; 1 = incident arthritis in w8; 0 = otherwise; NA = NA for all M8Q30d, M8Q30e, and M8Q30f
+data$m8arthritis <- with(data, ifelse(is.na(M8Q30d) & is.na(M8Q30e) & is.na(M8Q30f), NA, ifelse(M8Q30d == 1 | M8Q30e == 1 | M8Q30f == 1,1,0)))
+# create new column 'm8neuro_degen' to indicate incident neuro-degenerative disease in w8; 1 = incident neuro-degenerative disease in w8; 0 = otherwise; NA = NA for M8Q30q
+data$m8neuro_degen <- with(data, ifelse(is.na(M8Q30q), NA, ifelse(M8Q30q == 0,1,0)))
+
+# create new column 'm9diabetes' to indicate incident diabetes or pre-diabetes in w9; 1 = incident diabetes or pre-diabetes in w9; 0 = otherwise; NA = NA for m9q33d
+data$m9diabetes <- with(data, ifelse(is.na(m9q33d), NA, ifelse(m9q33d == 0,1,0)))
+# create new column 'm9arthritis' to indicate incident arthritis in w9; 1 = incident arthritis in w9; 0 = otherwise; NA = NA for all m9q33e, m9q33f, and m9q33g
+data$m9arthritis <- with(data, ifelse(is.na(m9q33e) & is.na(m9q33f) & is.na(m9q33g), NA, ifelse(m9q33e == 1 | m9q33f == 1 | m9q33g == 1,1,0)))
+# create new column 'm9sti' to indicate incident STIs in w9; 1 = incident STI in w9; 0 = otherwise; NA = NA for m9q33tt
+data$m9sti <- with(data, ifelse(is.na(m9q33tt), NA, ifelse(m9q33tt == 0,1,0)))
+# create new column 'm9neuro_degen' to indicate incident neuro-degenerative disease in w9; 1 = incident neuro-degenerative disease in w9; 0 = otherwise; NA = NA for m9q33x
+data$m9neuro_degen <- with(data, ifelse(is.na(m9q33x), NA, ifelse(m9q33x == 0,1,0)))
+# create new column 'm9heart_disease' to indicate incident heart diseases in w9; 1 = incident heart disease in w9; 0 = otherwise; NA = NA for all of m9q33j, m9q33k, m9q33l, m9q33m, and m9q33n.
+data$m9heart_disease <- with(data, ifelse(is.na(m9q33j) & is.na(m9q33k) & is.na(m9q33l) &is.na(m9q33m) & is.na(m9q33n), NA, ifelse(m9q33j == 1 | m9q33k == 1 | m9q33l == 1 | m9q33m == 1 | m9q33n == 1,1,0)))
+
+# create new column 'm10diabetes' to indicate incident diabetes or pre-diabetes in w10; 1 = incident t1,t2 diabetes or pre-diabetes in w10; 0 = otherwise; NA = NA for m10q37d
+data$m10diabetes <- with(data, ifelse(is.na(m10q37d), NA, ifelse(m10q37d == 0,1,0)))
+
+
+### Selection of Cancer Patients________________________________________________
+# Function to find the first column with a 1
+find_first_wave <- function(...) {
+  wave_values <- c(...)
+  # Check if all values are NA
+  if (all(is.na(wave_values))) {
+    return(NA)
+  }
+  # Find the first occurrence of 1
+  first_one <- which(wave_values == 1)[1]
+  if (!is.na(first_one)) {
+    return(first_one + 1)  # Return the column index + 1, excluding baseline
+  } else {
+    return(0)
+  }
+}
+
+# new column indicating in which wave did the observation developed breast cancer; 0 = never, 2:10 = wave2-10, respectively
+# Column names for breast cancer incidence
+columns_to_check <- c("m2q20kk", "m3q35m", "m4q32l", "m5q38m", "m6Q38n", "m7q32v", "M8Q30v", "m9q33dd", "m10q37y")
+# apply the function to each row and create a new column
+data <- data %>%
+  mutate(breast_first = pmap_dbl(select(., all_of(columns_to_check)), find_first_wave))
+
+# new column indicating in which wave did the observation developed cervical cancer; 0 = never, 2:10 = wave2-10, respectively
+# Column names for cervical cancer incidence
+columns_to_check <- c("m2q20ll", "m3q35n", "m4q32m", "m5q38n", "m6Q38o", "m7q32w", "M8Q30w", "m9q33ee", "m10q37z")
+# apply the function to each row and create a new column
+data <- data %>%
+  mutate(cervical_first = pmap_dbl(select(., all_of(columns_to_check)), find_first_wave))
+
+# new column indicating in which wave did the observation developed bowel cancer; 0 = never, 2:10 = wave2-10, respectively
+# Column names for bowel cancer incidence
+columns_to_check <- c("m2q20mm", "m3q35o", "m4q32n", "blank", "blank1", "m7q32y", "M8Q30y", "m9q33gg", "m10q37cc")
+# apply the function to each row and create a new column
+data <- data %>%
+  mutate(bowel_first = pmap_dbl(select(., all_of(columns_to_check)), find_first_wave))
+
+# new column indicating in which wave did the observation developed lung cancer; 0 = never, 2:10 = wave2-10, respectively
+# Column names for lung cancer incidence
+columns_to_check <- c("blank", "blank1", "blank2", "blank3", "blank4", "m7q32x", "M8Q30x", "m9q33ff", "m10q37bb")
+# apply the function to each row and create a new column
+data <- data %>%
+  mutate(lung_first = pmap_dbl(select(., all_of(columns_to_check)), find_first_wave))
+
+# For other cancer types in w10, we categorize ovarian cancer into other cancer types
+# if an observation has ovarian cancer incidence at w10, we consider her having other cancer incidence
+data <- data %>%
+  mutate(m10q37ee = ifelse(m10q37aa == 1 & (m10q37ee == 0 | is.na(m10q37ee)), 1, m10q37ee))
+
+# new column indicating in which wave did the observation developed other cancer; 0 = never, 2:10 = wave2-10, respectively
+# Column names for other cancer incidence
+columns_to_check <- c("m2q20oo", "m3q35p", "m4q32p", "m5q38p", "m6Q38q", "m7q32aa", "M8Q30aa", "m9q33ii", "m10q37ee")
+# apply the function to each row and create a new column
+data <- data %>%
+  mutate(other_first = pmap_dbl(select(., all_of(columns_to_check)), find_first_wave))
+
+# new column indicating in which wave did the observation developed skin cancer; 0 = never, 2:10 = wave2-10, respectively
+# Column names for skin cancer incidence
+columns_to_check <- c("m2q20nn", "blank", "m4q32o", "m5q38o", "m6Q38p", "m7q32z", "M8Q30z", "m9q33hh", "m10q37dd")
+# apply the function to each row and create a new column
+data <- data %>%
+  mutate(skin_first = pmap_dbl(select(., all_of(columns_to_check)), find_first_wave))
+
+# new column indicating in which wave did the observation developed any type of cancer other than skin cancer; 0 = never, 2:10 = wave2-10,respectively.
+find_cancer_first <- function(...) {
+  values <- c(...)
+  # Check if all values are NA
+  if (all(is.na(values))) {
+    return(NA)
+  }
+  # Filter out NAs and zeros
+  non_zero_values <- values[values != 0 & !is.na(values)]
+  # Check if all values are zero or NA after filtering
+  if (length(non_zero_values) == 0) {
+    return(0)
+  }
+  # Return the smallest non-zero value
+  return(min(non_zero_values))
+}
+# Apply the function to each row to create the new column 'cancer_first'
+data <- data %>%
+  mutate(cancer_first = pmap_dbl(select(., breast_first, cervical_first, bowel_first, lung_first, other_first), find_cancer_first))
+
+
+### Create cumulative record of medical history_________________________________
+
+# Function to find the first column with a 1
+find_first_wave <- function(...) {
+  wave_values <- c(...)
+  # Check if all values are NA
+  if (all(is.na(wave_values))) {
+    return(NA)
+  }
+  # Find the first occurrence of 1
+  first_one <- which(wave_values == 1)[1]
+  if (!is.na(first_one)) {
+    return(first_one)  # Return the column index, including baseline
+  } else {
+    return(0)
+  }
+}
+
+# new column indicating in which wave did the observation first developed diabetes; 0 = never, 1:10 = wave1-10, respectively
+columns_to_check <- c('m1q15a', 'm2q20aa', 'm3q35bb', 'm4q32bb', 'm5q38aa', 'm6diabetes', 'm7diabetes', 'm8diabetes', 'm9diabetes')
+# apply the function to each row and create a new column
+data <- data %>%
+  mutate(diabetes_first = pmap_dbl(select(., all_of(columns_to_check)), find_first_wave))
+
+# new column indicating in which wave did the observation first developed heart_disease; 0 = never, 1:10 = wave1-10, respectively
+columns_to_check <- c('m1q15b', 'm2q20cc', 'm3q35e', 'm4q32d', 'm5q38f', 'm6Q38f', 'm7q32i', 'M8Q30i', 'm9heart_disease')
+# apply the function to each row and create a new column
+data <- data %>%
+  mutate(heart_disease_first = pmap_dbl(select(., all_of(columns_to_check)), find_first_wave))
+
+# new column indicating in which wave did the observation first developed hypertension; 0 = never, 1:10 = wave1-10, respectively
+columns_to_check <- c('m1q15c', 'm2q20dd', 'm3q35f', 'm4q32e', 'm5q38g', 'm6Q38h', 'm7q32k', 'M8Q30k', 'm9q33p')
+# apply the function to each row and create a new column
+data <- data %>%
+  mutate(hypertension_first = pmap_dbl(select(., all_of(columns_to_check)), find_first_wave))
+
+# new column indicating in which wave did the observation first developed low_iron; 0 = never, 1:10 = wave1-10, respectively
+columns_to_check <- c('m1q15f', 'm2q20gg', 'm3q35i', 'm4q32h', 'm5q38i', 'm6Q38j', 'm7q32r', 'M8Q30r', 'm9q33y')
+# apply the function to each row and create a new column
+data <- data %>%
+  mutate(low_iron_first = pmap_dbl(select(., all_of(columns_to_check)), find_first_wave))
+
+# new column indicating in which wave did the observation first developed osteoporosis; 0 = never, 1:10 = wave1-10, respectively
+columns_to_check <- c('m1q15i', 'm2q20jj', 'm3q35l', 'm4q32k', 'm5q38l', 'm6Q38m', 'm7q32g', 'M8Q30g', 'm9q33h')
+# apply the function to each row and create a new column
+data <- data %>%
+  mutate(osteoporosis_first = pmap_dbl(select(., all_of(columns_to_check)), find_first_wave))
+
+# new column indicating in which wave did the observation first developed stroke; 0 = never, 1:10 = wave1-10, respectively
+columns_to_check <- c('m1q15d', 'm2q20ee', 'm3q35g', 'm4q32f', 'm5q38h', 'm6Q38i', 'm7q32l', 'M8Q30l', 'm9q33q')
+# apply the function to each row and create a new column
+data <- data %>%
+  mutate(stroke_first = pmap_dbl(select(., all_of(columns_to_check)), find_first_wave))
+
+# new column indicating in which wave did the observation first developed thrombosis; 0 = never, 1:10 = wave1-10, respectively
+# information on thrombosis for wave 5 is missing
+columns_to_check <- c('m1q15e', 'm2q20ff', 'm3q35h', 'm4q32g','blank', 'm6Q38g', 'm7q32j', 'M8Q30j', 'm9q33o')
+# apply the function to each row and create a new column
+data <- data %>%
+  mutate(thrombosis_first = pmap_dbl(select(., all_of(columns_to_check)), find_first_wave))
+
+# new column indicating in which wave did the observation first developed asthma; 0 = never, 1:10 = wave1-10, respectively
+columns_to_check <- c('m1q15g', 'm2q20hh', 'm3q35j', 'm4q32i', 'm5q38j', 'm6Q38k', 'm7q32s', 'M8Q30s', 'm9q33z')
+# apply the function to each row and create a new column
+data <- data %>%
+  mutate(asthma_first = pmap_dbl(select(., all_of(columns_to_check)), find_first_wave))
+
+# new column indicating in which wave did the observation first developed arthritis; 0 = never, 1:10 = wave1-10, respectively
+# information on arthritis is missing for wave 1 and wave 2
+columns_to_check <- c('blank', 'blank1', 'm3q35a', 'm4q32a', 'm5q38cc', 'm6arthritis', 'm7arthritis', 'm8arthritis', 'm9arthritis')
+# apply the function to each row and create a new column
+data <- data %>%
+  mutate(arthritis_first = pmap_dbl(select(., all_of(columns_to_check)), find_first_wave))
+
+# new column indicating in which wave did the observation first developed bronchitis; 0 = never, 1:10 = wave1-10, respectively
+columns_to_check <- c('m1q15h', 'm2q20ii', 'm3q35k', 'm4q32j', 'm5q38k', 'm6Q38l', 'm7q32t', 'M8Q30t', 'm9q33aa')
+# bronchitis in w2 to w8 include bronchitis and emphysema, in w9, question prompted included the following: Chronic bronchitis / emphysema / lung disease / chronic obstructive pulmonary disease (COPD)
+# apply the function to each row and create a new column
+data <- data %>%
+  mutate(bronchitis_first = pmap_dbl(select(., all_of(columns_to_check)), find_first_wave))
+
+
+# remove the blank columns created earlier
+data <- data %>% select(-blank, -blank1, -blank2, -blank3, -blank4, -blank5, -blank6, -blank7, -blank8)
+
+# create subset of data with only cancer incidence
+cancer_incidence <- subset(data,(cancer_first %in% 2:9 & w1_allc != 1)) # n = 1997
+
+# create a new column 'before_after_check' to see if the cancer case responded to the survey prior (and after) the incident wave; 1 = data for both 1 prior and 1 after are present, 0 = no
+case_id <- cancer_incidence[,c('idproj','cancer_first')]
+df <- klv
+df <- full_join(df,case_id,by = 'idproj')
+df$cancer_cases <- with(df,ifelse(is.na(df$cancer_first),NA,ifelse(df$cancer_first == df$survey & df$cancer_first != 0,df$cancer_first,NA)))
+df <- df %>%
+  group_by(idproj) %>%  # Group by 'idproj'
+  mutate(
+    before_after_check = case_when(
+      is.na(cancer_cases) ~ NA_real_,  # Set NA if cancer_first is NA
+      cancer_first != 0 & 
+        lag(survey) == survey - 1 & 
+        lead(survey) == survey + 1 ~ 1,  # Set 1 if the conditions are met
+      cancer_cases != 0 ~ 0  # Set 0 if conditions are not met
+    )
+  )
+
+# bind 'before_after_check' to main data frame
+temp <- subset(df,!is.na(cancer_cases))
+temp <- select(temp,idproj,before_after_check)
+data <- left_join(data,temp,by = 'idproj')
+
+
+# remove temporary data frames from the environment
+rm(temp, df, case_id, cancer_incidence)
+
+# create subset of cancer cases in each wave
+w2_case <- subset(data,(cancer_first == 2 & w1_allc == 0 ))  # n = 219
+w3_case <- subset(data,(cancer_first == 3 & w1_allc == 0 ))  # n = 269
+w4_case <- subset(data,(cancer_first == 4 & w1_allc == 0 ))  # n = 185
+w5_case <- subset(data,(cancer_first == 5 & w1_allc == 0 ))  # n = 240
+w6_case <- subset(data,(cancer_first == 6 & w1_allc == 0 ))  # n = 247
+w7_case <- subset(data,(cancer_first == 7 & w1_allc == 0 ))  # n = 248
+w8_case <- subset(data,(cancer_first == 8 & w1_allc == 0 ))  # n = 279
+w9_case <- subset(data,(cancer_first == 9 & w1_allc == 0 ))  # n = 310
+# total = 1997
+
+# There are 14 cancer patients did not report any information on cancer at baseline, 1 of them developed cancer in wave 10. 
+# Hence, 13 of them will be excluded from the cases as we are unclear of their cancer status at baseline.
+#datacheck_id <- c(800228, 802479, 802769, 802971, 803871, 804443, 804823, 805057, 806265, 806860, 807051, 811100, 811140, 813508)
+#datacheck <- subset(data, idproj %in% datacheck_id)
+#datacheck <- select(datacheck,idproj,w1_allc,cancer_first,,m1q15a,m1q15b,m1q15c,m1q15d,m1q15e,m1q15f,m1q15g,m1q15h,m1q15i,m1q15j,m1q15k,m1q15l,m1q15m,m1q15n,m1q15o)
+```
+
+
+```{r case_medical_history,include=F,message=F,warning=F}
+# sort co-morbidity data for cases in w2
+w2_case_temp <- select(w2_case, idproj, cancer_first, breast_first, cervical_first, bowel_first, lung_first, other_first, skin_first , bronchitis_first, diabetes_first, heart_disease_first, hypertension_first, low_iron_first, osteoporosis_first, stroke_first, thrombosis_first, asthma_first, arthritis_first, m2q20aa, m2q20cc, m2q20dd, m2q20ee, m2q20ff, m2q20gg, m2q20hh, m2q20ii, m2q20jj, m2q20kk, m2q20ll, m2q20mm, m2q20nn, m2q20oo, m2bp, m2gh, m2ht, m2mh, m2pf, m2re, m2rp, m2sf, m2vt, before_after_check, m2metminexgrp)
+
+# rename the columns
+names(w2_case_temp) <- c('idproj', 'cancer_first', 'breast_first', 'cervical_first', 'bowel_first', 'lung_first', 'other_first',  'skin_first', 'bronchitis_first', 'diabetes_first', 'heart_disease_first', 'hypertension_first', 'low_iron_first', 'osteoporosis_first', 'stroke_first', 'thrombosis_first', 'asthma_first', 'arthritis_first', 'diabetes', 'heart_disease', 'hypertension', 'stroke', 'thrombosis', 'low_iron', 'asthma', 'lung_infection', 'osteoporosis', 'breast_cancer', 'cervical_cancer', 'bowel_cancer', 'skin_cancer', 'other_cancer', 'bp', 'gh', 'ht', 'mh', 'pf', 're', 'rp', 'sf', 'vt', 'before_after_check', 'exercise')
+
+# sort co-morbidity data for cases in W3
+w3_case_temp <- select(w3_case, idproj, cancer_first, breast_first, cervical_first, bowel_first, lung_first, other_first, skin_first, bronchitis_first, diabetes_first, heart_disease_first, hypertension_first, low_iron_first, osteoporosis_first, stroke_first, thrombosis_first, asthma_first, arthritis_first, m3q35a, m3q35bb, m3q35e, m3q35f, m3q35g, m3q35h, m3q35i, m3q35j, m3q35k, m3q35l, m3q35m, m3q35n, m3q35o, m3q35p, m3bp, m3gh, m3ht, m3mh, m3pf, m3re, m3rp, m3sf, m3vt, before_after_check, m3metminexgrp)
+# rename the columns
+names(w3_case_temp) <- c('idproj','cancer_first', 'breast_first', 'cervical_first', 'bowel_first', 'lung_first', 'other_first', 'skin_first', 'bronchitis_first', 'diabetes_first', 'heart_disease_first', 'hypertension_first', 'low_iron_first', 'osteoporosis_first', 'stroke_first', 'thrombosis_first', 'asthma_first', 'arthritis_first', 'arthritis', 'diabetes', 'heart_disease', 'hypertension', 'stroke', 'thrombosis', 'low_iron', 'asthma', 'lung_infection', 'osteoporosis', 'breast_cancer', 'cervical_cancer', 'bowel_cancer', 'other_cancer', 'bp', 'gh', 'ht', 'mh', 'pf', 're', 'rp', 'sf', 'vt', 'before_after_check', 'exercise')
+
+# sort co-morbidity data for cases in w4
+w4_case_temp <- select(w4_case, idproj, cancer_first, breast_first, cervical_first, bowel_first, lung_first, other_first, skin_first, bronchitis_first, diabetes_first, heart_disease_first, hypertension_first, low_iron_first, osteoporosis_first, stroke_first, thrombosis_first, asthma_first, arthritis_first, m4q32a, m4q32bb, m4q32d, m4q32e, m4q32f, m4q32g, m4q32h, m4q32i, m4q32j, m4q32k, m4q32l, m4q32m, m4q32n, m4q32o, m4q32p, m4bp, m4gh, m4ht, m4mh, m4pf, m4re, m4rp, m4sf, m4vt, before_after_check, m4metminexgrp)
+# rename the columns
+names(w4_case_temp) <- c('idproj','cancer_first', 'breast_first', 'cervical_first', 'bowel_first', 'lung_first', 'other_first', 'skin_first', 'bronchitis_first', 'diabetes_first', 'heart_disease_first', 'hypertension_first', 'low_iron_first', 'osteoporosis_first', 'stroke_first', 'thrombosis_first', 'asthma_first', 'arthritis_first', 'arthritis', 'diabetes', 'heart_disease', 'hypertension', 'stroke', 'thrombosis', 'low_iron', 'asthma', 'lung_infection', 'osteoporosis', 'breast_cancer', 'cervical_cancer', 'bowel_cancer', 'skin_cancer', 'other_cancer', 'bp', 'gh', 'ht', 'mh', 'pf', 're', 'rp', 'sf', 'vt', 'before_after_check', 'exercise')
+
+w5_case_temp <- select(w5_case, idproj, cancer_first, breast_first, cervical_first, bowel_first, lung_first, other_first, skin_first, bronchitis_first, diabetes_first, heart_disease_first, hypertension_first, low_iron_first, osteoporosis_first, stroke_first, thrombosis_first, asthma_first, arthritis_first, m5q38cc, m5q38aa, m5q38f, m5q38g, m5q38h, m5q38i, m5q38j, m5q38k, m5q38l, m5q38m, m5q38n, m5q38o, m5q38p, m5bp, m5gh, m5ht, m5mh, m5pf, m5re, m5rp, m5sf, m5vt, before_after_check, m5metminexgrp) # information on bowel cancer and thrombosis is missing for w5
+# rename the columns
+names(w5_case_temp) <- c('idproj','cancer_first', 'breast_first', 'cervical_first', 'bowel_first', 'lung_first', 'other_first', 'skin_first', 'bronchitis_first', 'diabetes_first', 'heart_disease_first', 'hypertension_first', 'low_iron_first', 'osteoporosis_first', 'stroke_first', 'thrombosis_first', 'asthma_first', 'arthritis_first', 'arthritis', 'diabetes', 'heart_disease', 'hypertension', 'stroke', 'low_iron', 'asthma', 'lung_infection', 'osteoporosis', 'breast_cancer', 'cervical_cancer', 'skin_cancer', 'other_cancer', 'bp', 'gh', 'ht', 'mh', 'pf', 're', 'rp', 'sf', 'vt', 'before_after_check', 'exercise')
+
+w6_case_temp <- select(w6_case, idproj, cancer_first, breast_first, cervical_first, bowel_first, lung_first, other_first, skin_first, bronchitis_first, diabetes_first, heart_disease_first, hypertension_first, low_iron_first, osteoporosis_first, stroke_first, thrombosis_first, asthma_first, arthritis_first, m6arthritis, m6diabetes, m6Q38f, m6Q38g, m6Q38h, m6Q38i, m6Q38j, m6Q38k, m6Q38l, m6Q38m, m6Q38n, m6Q38o, m6Q38p, m6Q38q, m6bp, m6gh, m6ht, m6mh, m6pf, m6re, m6rp, m6sf, m6vt, before_after_check, m6metminexgrp) 
+# rename the columns
+names(w6_case_temp) <- c('idproj','cancer_first', 'breast_first', 'cervical_first', 'bowel_first', 'lung_first', 'other_first', 'skin_first', 'bronchitis_first', 'diabetes_first', 'heart_disease_first', 'hypertension_first', 'low_iron_first', 'osteoporosis_first', 'stroke_first', 'thrombosis_first', 'asthma_first', 'arthritis_first', 'arthritis', 'diabetes', 'heart_disease', 'thrombosis', 'hypertension', 'stroke', 'low_iron', 'asthma', 'lung_infection', 'osteoporosis', 'breast_cancer', 'cervical_cancer', 'skin_cancer', 'other_cancer', 'bp', 'gh', 'ht', 'mh', 'pf', 're', 'rp', 'sf', 'vt', 'before_after_check', 'exercise')
+
+w7_case_temp <- select(w7_case, idproj, cancer_first, breast_first, cervical_first, bowel_first, lung_first, other_first, skin_first, bronchitis_first, diabetes_first, heart_disease_first, hypertension_first, low_iron_first, osteoporosis_first, stroke_first, thrombosis_first, asthma_first, arthritis_first, m7arthritis, m7diabetes, m7q32g, m7q32i, m7q32j, m7q32k, m7q32l, m7q32r, m7q32s, m7q32t, m7q32v, m7q32w, m7q32x, m7q32y, m7q32z, m7q32aa, m7sti, m7neuro_degen, m7bp, m7gh, m7ht, m7mh, m7pf, m7re, m7rp, m7sf, m7vt, before_after_check, m7metminexgrp)
+# rename the columns
+names(w7_case_temp) <- c('idproj','cancer_first', 'breast_first', 'cervical_first', 'bowel_first', 'lung_first', 'other_first', 'skin_first', 'bronchitis_first', 'diabetes_first', 'heart_disease_first', 'hypertension_first', 'low_iron_first', 'osteoporosis_first', 'stroke_first', 'thrombosis_first', 'asthma_first', 'arthritis_first', 'arthritis', 'diabetes', 'osteoporosis', 'heart_disease', 'thrombosis', 'hypertension', 'stroke', 'low_iron', 'asthma', 'lung_infection', 'breast_cancer', 'cervical_cancer', 'lung_cancer', 'bowel_cancer', 'skin_cancer', 'other_cancer', 'sti', 'neuro_degen', 'bp', 'gh', 'ht', 'mh', 'pf', 're', 'rp', 'sf', 'vt', 'before_after_check', 'exercise')
+
+w8_case_temp <- select(w8_case, idproj, cancer_first, breast_first, cervical_first, bowel_first, lung_first, other_first, skin_first, bronchitis_first, diabetes_first, heart_disease_first, hypertension_first, low_iron_first, osteoporosis_first, stroke_first, thrombosis_first, asthma_first, arthritis_first, m8arthritis, m8diabetes, M8Q30g, M8Q30i, M8Q30j, M8Q30k, M8Q30l, M8Q30r, M8Q30s, M8Q30t, M8Q30v, M8Q30w, M8Q30x, M8Q30y, M8Q30z, M8Q30aa, m8neuro_degen, m8bp, m8gh, m8ht, m8mh, m8pf, m8re, m8rp, m8sf, m8vt, before_after_check, m8metminexgrp)
+# rename the columns
+names(w8_case_temp) <- c('idproj','cancer_first', 'breast_first', 'cervical_first', 'bowel_first', 'lung_first', 'other_first', 'skin_first', 'bronchitis_first', 'diabetes_first', 'heart_disease_first', 'hypertension_first', 'low_iron_first', 'osteoporosis_first', 'stroke_first', 'thrombosis_first', 'asthma_first', 'arthritis_first', 'arthritis', 'diabetes', 'osteoporosis', 'heart_disease', 'thrombosis', 'hypertension', 'stroke', 'low_iron', 'asthma', 'lung_infection', 'breast_cancer','cervical_cancer', 'lung_cancer', 'bowel_cancer', 'skin_cancer', 'other_cancer', 'neuro_degen', 'bp', 'gh', 'ht', 'mh', 'pf', 're', 'rp', 'sf', 'vt', 'before_after_check', 'exercise')
+
+w9_case_temp <- select(w9_case, idproj, cancer_first, breast_first, cervical_first, bowel_first, lung_first, other_first, skin_first, bronchitis_first, diabetes_first, heart_disease_first, hypertension_first, low_iron_first, osteoporosis_first, stroke_first, thrombosis_first, asthma_first, arthritis_first, m9arthritis, m9diabetes, m9q33h, m9heart_disease, m9q33o, m9q33p, m9q33q, m9q33y, m9q33z, m9q33dd, m9q33ee, m9q33ff, m9q33gg, m9q33hh, m9q33ii, m9neuro_degen, m9sti, m9bp, m9gh, m9ht, m9mh, m9pf, m9re, m9rp, m9sf, m9vt, before_after_check, m9metminexgrp)
+# rename the columns
+names(w9_case_temp) <- c('idproj','cancer_first', 'breast_first', 'cervical_first', 'bowel_first', 'lung_first', 'other_first', 'skin_first', 'bronchitis_first', 'diabetes_first', 'heart_disease_first', 'hypertension_first', 'low_iron_first', 'osteoporosis_first', 'stroke_first', 'thrombosis_first', 'asthma_first', 'arthritis_first', 'arthritis','diabetes', 'osteoporosis', 'heart_disease', 'thrombosis', 'hypertension', 'stroke', 'low_iron', 'asthma', 'breast_cancer','cervical_cancer', 'lung_cancer', 'bowel_cancer', 'skin_cancer', 'other_cancer', 'neuro_degen', 'sti', 'bp', 'gh', 'ht', 'mh', 'pf', 're', 'rp', 'sf', 'vt','before_after_check', 'exercise')
+
+# new data frame for cases
+case <- full_join(w2_case_temp,w3_case_temp)
+case <- full_join(case,w4_case_temp)
+case <- full_join(case,w5_case_temp)
+case <- full_join(case,w6_case_temp)
+case <- full_join(case,w7_case_temp)
+case <- full_join(case,w8_case_temp)
+case <- full_join(case,w9_case_temp)
+
+# remove temporary data frames from the environment
+rm(w2_case_temp, w3_case_temp, w4_case_temp, w5_case_temp, w6_case_temp, w7_case_temp, w8_case_temp, w9_case_temp)
+
+# determine whether the cases had history of co-morbidity of interest before cancer incidence
+# create new column 'diabetes_his' indicating if the observation had history of diabetes before the wave of cancer incidence; 1 = yes ;  0 = no; NA if diabetes information is missing for the observation
+case$diabetes_his <- with(case, ifelse(is.na(diabetes_first), NA, ifelse(diabetes_first != 0 & cancer_first >= diabetes_first, 1, 0)))
+
+# create new column 'hypertension_his' indicating if the observation had history of hypertension before the wave of cancer incidence; 1 = yes ;  0 = no; NA if hypertension information is missing for the observation
+case$hypertension_his <- with(case, ifelse(is.na(hypertension_first), NA, ifelse(hypertension_first != 0 & cancer_first >= hypertension_first, 1, 0)))
+
+# create new column 'heart_disease_his' indicating if the observation had history of heart_disease before the wave of cancer incidence; 1 = yes ;  0 = no; NA if heart_disease information is missing for the observation
+case$heart_disease_his <- with(case, ifelse(is.na(heart_disease_first), NA, ifelse(heart_disease_first != 0 & cancer_first >= heart_disease_first, 1, 0)))
+
+# create new column 'low_iron_his' indicating if the observation had history of low_iron before the wave of cancer incidence; 1 = yes ;  0 = no; NA if low_iron information is missing for the observation
+case$low_iron_his <- with(case, ifelse(is.na(low_iron_first), NA, ifelse(low_iron_first != 0 & cancer_first >= low_iron_first, 1, 0)))
+
+# create new column 'osteoporosis_his' indicating if the observation had history of osteoporosis before the wave of cancer incidence; 1 = yes ;  0 = no; NA if osteoporosis information is missing for the observation
+case$osteoporosis_his <- with(case, ifelse(is.na(osteoporosis_first), NA, ifelse(osteoporosis_first != 0 & cancer_first >= osteoporosis_first, 1, 0)))
+
+# create new column 'stroke_his' indicating if the observation had history of stroke before the wave of cancer incidence; 1 = yes ;  0 = no; NA if stroke information is missing for the observation
+case$stroke_his <- with(case, ifelse(is.na(stroke_first), NA, ifelse(stroke_first != 0 & cancer_first >= stroke_first, 1, 0)))
+
+# create new column 'thrombosis_his' indicating if the observation had history of thrombosis before the wave of cancer incidence; 1 = yes ;  0 = no; NA if thrombosis information is missing for the observation
+case$thrombosis_his <- with(case, ifelse(is.na(thrombosis_first), NA, ifelse(thrombosis_first != 0 & cancer_first >= thrombosis_first, 1, 0)))
+
+# create new column 'asthma_his' indicating if the observation had history of asthma before the wave of cancer incidence; 1 = yes ;  0 = no; NA if asthma information is missing for the observation
+case$asthma_his <- with(case, ifelse(is.na(asthma_first), NA, ifelse(asthma_first != 0 & cancer_first >= asthma_first, 1, 0)))
+
+# create new column 'arthritis_his' indicating if the observation had history of arthritis before the wave of cancer incidence; 1 = yes ;  0 = no; NA if arthritis information is missing for the observation
+case$arthritis_his <- with(case, ifelse(is.na(arthritis_first), NA, ifelse(arthritis_first != 0 & cancer_first >= arthritis_first, 1, 0)))
+# information on arthritis is missing for wave 1 and wave 2, resulting in 22 
+# cases who had cancer in w2 and lost follow up after w2 not having any 
+# information on arthritis. Therefore, these ppl are considered not having the condition
+# case$arthritis_his <- with(case, ifelse(is.na(arthritis_his), 0, arthritis_his))
+
+# create new column 'bronchitis_his' indicating if the observation had history of bronchitis before the wave of cancer incidence; 1 = yes ;  0 = no; NA if bronchitis information is missing for the observation
+case$bronchitis_his <- with(case, ifelse(is.na(bronchitis_first), NA, ifelse(bronchitis_first != 0 & cancer_first >= bronchitis_first, 1, 0)))
+
+
+# create new column 'num_comorb' to access how many co-morbidity(other than cancer, excluding skin cancer) does the observation have at the wave of cancer incidence
+columns_to_check <- c('diabetes_his', 'hypertension_his', 'heart_disease_his', 'osteoporosis_his', 'stroke_his', 'thrombosis_his', 'asthma_his', 'arthritis_his', 'bronchitis_his')
+case$num_comorb <- rowSums(case[columns_to_check] == 1, na.rm = TRUE)
+
+# remove the subsets of cases for each wave to further free the environment
+rm(w2_case, w3_case, w4_case, w5_case, w6_case, w7_case, w8_case, w9_case)
+```
+
+
+```{r case_demographics_&_exclusion,include=F,message=F,warning=F}
+# sort demographic data for cases
+# select the information from klv data set with only cases and their corresponding wave of cance incidence
+cancer_incidence <- subset(data,(cancer_first %in% 2:9 & w1_allc != 1)) # n = 1997
+case_id <- cancer_incidence[,c('idproj','cancer_first')]
+df <- klv
+df <- full_join(df,case_id,by = 'idproj')
+temp <- subset(df, df$survey == df$cancer_first)
+
+# select the variable of interest
+case_demo <- select(temp, idproj, srh, age, bmigroup, ariapgp_3gp, moi_3gp, marital_2gp, alcnhmrc_3gp, smokst_3gp, hq_3gp, cob_3gp)
+names(case_demo) <- c('idproj', 'self_rated_health', 'age', 'bmi', 'area_residence', 'income', 'marital', 'alcohol', 'smoke', 'qualification', 'country_of_birth')
+
+
+# join the data sets
+case <- full_join(case,case_demo, by = 'idproj') # n = 1997
+
+# exclusion criteria____________________________________________________________
+# n = 1997 at this point
+reply <- read_sas("C:/Users/user/Desktop/PHBH5610/ALSWH_1946-51_sas/ALSWH_1946-51_sas/recentmidstatus.sas7bdat",NULL)
+# exclude people who died within 1 year of cancer incidence wave
+temp <- left_join(case, reply, by = 'idproj')
+temp <- select(temp, idproj, deathyear, cancer_first)
+
+# create new column 'cancer_year' to indicate the year of survey of cancer incidence
+temp <- temp %>%
+  mutate(cancer_year = case_when(
+    cancer_first == 2 ~ 1998,
+    cancer_first == 3 ~ 2001,
+    cancer_first == 4 ~ 2004,
+    cancer_first == 5 ~ 2007,
+    cancer_first == 6 ~ 2010,
+    cancer_first == 7 ~ 2013,
+    cancer_first == 8 ~ 2016,
+    cancer_first == 9 ~ 2019,
+    TRUE ~ NA_real_  # For any other values, set NA (or you can leave this line out if no other values exist)
+  ))
+
+# create new column 'death_in_1_year' to indicate if the observation dies within 1 year of cancer incidence; 1 = yea, 0 = no
+temp <- temp %>%
+  mutate(death_in_1_year = if_else(
+    !is.na(deathyear) & deathyear == cancer_year + 1, 
+    1, 
+    0
+  ))
+
+# 52 observations died within 1 year of reporting cancer
+temp <- select(temp, idproj, death_in_1_year)
+case <- full_join(case, temp, by = 'idproj')
+
+# remove the cases who died within 1 year of cancer incidence
+
+# case <- subset(case, death_in_1_year == 0) # n = 1945 (52 excluded)
+w2_case <- subset(case, cancer_first == 2) # n = 215 (4 excluded)
+w3_case <- subset(case, cancer_first == 3) # n = 264 (5 excluded)
+w4_case <- subset(case, cancer_first == 4) # n = 182 (3 excluded)
+w5_case <- subset(case, cancer_first == 5) # n = 235 (5 excluded)
+w6_case <- subset(case, cancer_first == 6) # n = 238 (9 excluded)
+w7_case <- subset(case, cancer_first == 7) # n = 240 (8 excluded)
+w8_case <- subset(case, cancer_first == 8) # n = 273 (6 excluded)
+w9_case <- subset(case, cancer_first == 9) # n = 298 (12 excluded)
+
+# case <- case %>% select(-death_in_1_year) # remove the column indicating death information
+
+# remove temporary data frames from the environment
+rm(cancer_incidence, reply, case_id, df, case_klv, temp, case_demo, w2_case,  w3_case, w4_case, w5_case, w6_case, w7_case, w8_case, w9_case)
+```
+
+
+```{r control_sampling,include=F,message=F,warning=F}
+# control sampling
+# strategy: incidence density 1 to 2 sampling - for each case in a given wave, 2 controls are randomly selected
+# coding logic: omit people who had cancer at baseline (w1_allc == 1); starting wave 2 to wave 9, randomly select c(430, 528, 364, 470, 476, 480, 546, 596) samples without replacement
+
+# set seed for random selection
+set.seed(1004733808)
+
+# using klv dataset to select samples
+# remove people who had cancer at baseline or are identified cases
+temp <- subset(data, w1_allc == 1 | cancer_first %in% 2:10)
+cancer_id <- temp[,c('idproj')]
+df <- klv
+df <- anti_join(df, cancer_id, by = 'idproj')
+rm(cancer_id)
+
+# select 438 samples from wave 2
+df_2 <- subset(df, survey == 2)
+df_2 <- sample_n(df_2, 438, replace = F)
+df_2_id <- select(df_2, idproj, survey)
+
+# select 538 samples from wave 3
+df <- anti_join(df, df_2_id, by = 'idproj')
+df_3 <- subset(df, survey == 3)
+df_3 <- sample_n(df_3, 538, replace = F)
+df_3_id <- select(df_3, idproj, survey)
+
+# select 370 samples from wave 4
+df <- anti_join(df, df_3_id, by = 'idproj')
+df_4 <- subset(df, survey == 4)
+df_4 <- sample_n(df_4, 370, replace = F)
+df_4_id <- select(df_4, idproj, survey)
+
+# select 480 samples from wave 5
+df <- anti_join(df, df_4_id, by = 'idproj')
+df_5 <- subset(df, survey == 5)
+df_5 <- sample_n(df_5, 480, replace = F)
+df_5_id <- select(df_5, idproj, survey)
+
+# select 494 samples from wave 6
+df <- anti_join(df, df_5_id, by = 'idproj')
+df_6 <- subset(df, survey == 6)
+df_6 <- sample_n(df_6, 494, replace = F)
+df_6_id <- select(df_6, idproj, survey)
+
+# select 496 samples from wave 7
+df <- anti_join(df, df_6_id, by = 'idproj')
+df_7 <- subset(df, survey == 7)
+df_7 <- sample_n(df_7, 496, replace = F)
+df_7_id <- select(df_7, idproj, survey)
+
+# select 558 samples from wave 8
+df <- anti_join(df, df_7_id, by = 'idproj')
+df_8 <- subset(df, survey == 8)
+df_8 <- sample_n(df_8, 558, replace = F)
+df_8_id <- select(df_8, idproj, survey)
+
+# select 620 samples from wave 9
+df <- anti_join(df, df_8_id, by = 'idproj')
+df_9 <- subset(df, survey == 9)
+df_9 <- sample_n(df_9, 620, replace = F)
+df_9_id <- select(df_9, idproj, survey)
+
+# combine the id list of controls
+control_id <- full_join(df_2_id, df_3_id)
+control_id <- full_join(control_id, df_4_id)
+control_id <- full_join(control_id, df_5_id)
+control_id <- full_join(control_id, df_6_id)
+control_id <- full_join(control_id, df_7_id)
+control_id <- full_join(control_id, df_8_id)
+control_id <- full_join(control_id, df_9_id)
+
+names(control_id) <- c('idproj', 'sample_wave')
+
+# check if the control has completed the survey 1 prior and 1 after the wave from which she is sampled from
+df <- klv
+df <- full_join(df, control_id, by = 'idproj')
+df$control <- with(df,ifelse(is.na(df$sample_wave),NA,ifelse(df$sample_wave == df$survey & df$sample_wave != 0,df$sample_wave,NA)))
+df <- df %>%
+  group_by(idproj) %>%  # Group by 'idproj'
+  mutate(
+    before_after_check = case_when(
+      is.na(control) ~ NA_real_,  # Set NA if sample_wave is NA
+      sample_wave != 0 & 
+        lag(survey) == survey - 1 & 
+        lead(survey) == survey + 1 ~ 1,  # Set 1 if the conditions are met
+      control != 0 ~ 0  # Set 0 if conditions are not met
+    )
+  )
+
+# bind 'sample_wave' and 'before_after_check' to main data frame
+temp <- subset(df,!is.na(control))
+temp <- select(temp, idproj, sample_wave)
+data <- left_join(data,temp,by = 'idproj')
+temp <- subset(df,!is.na(control))
+temp <- select(temp, idproj, before_after_check)
+data <- data %>%
+  left_join(temp, by = "idproj", suffix = c("_df1", "_df2"))
+# Update 'before_after_check' in data with the values from temp
+data <- data %>%
+  mutate(before_after_check = coalesce(before_after_check_df2, before_after_check_df1)) %>%
+  select(-before_after_check_df1, -before_after_check_df2)  # remove the temporary columns
+
+# remove temporary data frames from the environment
+rm(df, temp, df_2, df_3, df_4, df_5, df_6, df_7, df_8, df_9, df_2_id, df_3_id, df_4_id, df_5_id, df_6_id, df_7_id, df_8_id, df_9_id, case_id)
+
+# take subsets of controls in each wave
+w2_control <- subset(data, sample_wave == 2) # n = 438
+w3_control <- subset(data, sample_wave == 3) # n = 538
+w4_control <- subset(data, sample_wave == 4) # n = 370
+w5_control <- subset(data, sample_wave == 5) # n = 480
+w6_control <- subset(data, sample_wave == 6) # n = 494
+w7_control <- subset(data, sample_wave == 7) # n = 496
+w8_control <- subset(data, sample_wave == 8) # n = 558
+w9_control <- subset(data, sample_wave == 9) # n = 620
+```
+
+
+```{r control_medical_history, include=F,message=F,warning=F}
+# sort co-morbidity data for controls in w2
+w2_control_temp <- select(w2_control, idproj, sample_wave, breast_first, cervical_first, bowel_first, lung_first, other_first, skin_first , bronchitis_first, diabetes_first, heart_disease_first, hypertension_first, low_iron_first, osteoporosis_first, stroke_first, thrombosis_first, asthma_first, arthritis_first, m2q20aa, m2q20cc, m2q20dd, m2q20ee, m2q20ff, m2q20gg, m2q20hh, m2q20ii, m2q20jj, m2q20kk, m2q20ll, m2q20mm, m2q20nn, m2q20oo, m2bp, m2gh, m2ht, m2mh, m2pf, m2re, m2rp, m2sf, m2vt, before_after_check)
+# rename the columns
+names(w2_control_temp) <- c('idproj', 'sample_wave', 'breast_first', 'cervical_first', 'bowel_first', 'lung_first', 'other_first',  'skin_first', 'bronchitis_first', 'diabetes_first', 'heart_disease_first', 'hypertension_first', 'low_iron_first', 'osteoporosis_first', 'stroke_first', 'thrombosis_first', 'asthma_first', 'arthritis_first', 'diabetes', 'heart_disease', 'hypertension', 'stroke', 'thrombosis', 'low_iron', 'asthma', 'lung_infection', 'osteoporosis', 'breast_cancer', 'cervical_cancer', 'bowel_cancer', 'skin_cancer', 'other_cancer', 'bp', 'gh', 'ht', 'mh', 'pf', 're', 'rp', 'sf', 'vt', 'before_after_check')
+
+# sort co-morbidity data for controls in W3
+w3_control_temp <- select(w3_control, idproj, sample_wave, breast_first, cervical_first, bowel_first, lung_first, other_first, skin_first, bronchitis_first, diabetes_first, heart_disease_first, hypertension_first, low_iron_first, osteoporosis_first, stroke_first, thrombosis_first, asthma_first, arthritis_first, m3q35a, m3q35bb, m3q35e, m3q35f, m3q35g, m3q35h, m3q35i, m3q35j, m3q35k, m3q35l, m3q35m, m3q35n, m3q35o, m3q35p, m3bp, m3gh, m3ht, m3mh, m3pf, m3re, m3rp, m3sf, m3vt, before_after_check)
+# rename the columns
+names(w3_control_temp) <- c('idproj','sample_wave', 'breast_first', 'cervical_first', 'bowel_first', 'lung_first', 'other_first', 'skin_first', 'bronchitis_first', 'diabetes_first', 'heart_disease_first', 'hypertension_first', 'low_iron_first', 'osteoporosis_first', 'stroke_first', 'thrombosis_first', 'asthma_first', 'arthritis_first', 'arthritis', 'diabetes', 'heart_disease', 'hypertension', 'stroke', 'thrombosis', 'low_iron', 'asthma', 'lung_infection', 'osteoporosis', 'breast_cancer', 'cervical_cancer', 'bowel_cancer', 'other_cancer', 'bp', 'gh', 'ht', 'mh', 'pf', 're', 'rp', 'sf', 'vt', 'before_after_check')
+
+# sort co-morbidity data for controls in w4
+w4_control_temp <- select(w4_control, idproj, sample_wave, breast_first, cervical_first, bowel_first, lung_first, other_first, skin_first, bronchitis_first, diabetes_first, heart_disease_first, hypertension_first, low_iron_first, osteoporosis_first, stroke_first, thrombosis_first, asthma_first, arthritis_first, m4q32a, m4q32bb, m4q32d, m4q32e, m4q32f, m4q32g, m4q32h, m4q32i, m4q32j, m4q32k, m4q32l, m4q32m, m4q32n, m4q32o, m4q32p, m4bp, m4gh, m4ht, m4mh, m4pf, m4re, m4rp, m4sf, m4vt, before_after_check)
+# rename the columns
+names(w4_control_temp) <- c('idproj','sample_wave', 'breast_first', 'cervical_first', 'bowel_first', 'lung_first', 'other_first', 'skin_first', 'bronchitis_first', 'diabetes_first', 'heart_disease_first', 'hypertension_first', 'low_iron_first', 'osteoporosis_first', 'stroke_first', 'thrombosis_first', 'asthma_first', 'arthritis_first', 'arthritis', 'diabetes', 'heart_disease', 'hypertension', 'stroke', 'thrombosis', 'low_iron', 'asthma', 'lung_infection', 'osteoporosis', 'breast_cancer', 'cervical_cancer', 'bowel_cancer', 'skin_cancer', 'other_cancer', 'bp', 'gh', 'ht', 'mh', 'pf', 're', 'rp', 'sf', 'vt', 'before_after_check')
+
+w5_control_temp <- select(w5_control, idproj, sample_wave, breast_first, cervical_first, bowel_first, lung_first, other_first, skin_first, bronchitis_first, diabetes_first, heart_disease_first, hypertension_first, low_iron_first, osteoporosis_first, stroke_first, thrombosis_first, asthma_first, arthritis_first, m5q38cc, m5q38aa, m5q38f, m5q38g, m5q38h, m5q38i, m5q38j, m5q38k, m5q38l, m5q38m, m5q38n, m5q38o, m5q38p, m5bp, m5gh, m5ht, m5mh, m5pf, m5re, m5rp, m5sf, m5vt, before_after_check) # information on bowel cancer and thrombosis is missing for w5
+# rename the columns
+names(w5_control_temp) <- c('idproj','sample_wave', 'breast_first', 'cervical_first', 'bowel_first', 'lung_first', 'other_first', 'skin_first', 'bronchitis_first', 'diabetes_first', 'heart_disease_first', 'hypertension_first', 'low_iron_first', 'osteoporosis_first', 'stroke_first', 'thrombosis_first', 'asthma_first', 'arthritis_first', 'arthritis', 'diabetes', 'heart_disease', 'hypertension', 'stroke', 'low_iron', 'asthma', 'lung_infection', 'osteoporosis', 'breast_cancer', 'cervical_cancer', 'skin_cancer', 'other_cancer', 'bp', 'gh', 'ht', 'mh', 'pf', 're', 'rp', 'sf', 'vt', 'before_after_check')
+
+w6_control_temp <- select(w6_control, idproj, sample_wave, breast_first, cervical_first, bowel_first, lung_first, other_first, skin_first, bronchitis_first, diabetes_first, heart_disease_first, hypertension_first, low_iron_first, osteoporosis_first, stroke_first, thrombosis_first, asthma_first, arthritis_first, m6arthritis, m6diabetes, m6Q38f, m6Q38g, m6Q38h, m6Q38i, m6Q38j, m6Q38k, m6Q38l, m6Q38m, m6Q38n, m6Q38o, m6Q38p, m6Q38q, m6bp, m6gh, m6ht, m6mh, m6pf, m6re, m6rp, m6sf, m6vt, before_after_check) 
+# rename the columns
+names(w6_control_temp) <- c('idproj','sample_wave', 'breast_first', 'cervical_first', 'bowel_first', 'lung_first', 'other_first', 'skin_first', 'bronchitis_first', 'diabetes_first', 'heart_disease_first', 'hypertension_first', 'low_iron_first', 'osteoporosis_first', 'stroke_first', 'thrombosis_first', 'asthma_first', 'arthritis_first', 'arthritis', 'diabetes', 'heart_disease', 'thrombosis', 'hypertension', 'stroke', 'low_iron', 'asthma', 'lung_infection', 'osteoporosis', 'breast_cancer', 'cervical_cancer', 'skin_cancer', 'other_cancer', 'bp', 'gh', 'ht', 'mh', 'pf', 're', 'rp', 'sf', 'vt', 'before_after_check')
+
+w7_control_temp <- select(w7_control, idproj, sample_wave, breast_first, cervical_first, bowel_first, lung_first, other_first, skin_first, bronchitis_first, diabetes_first, heart_disease_first, hypertension_first, low_iron_first, osteoporosis_first, stroke_first, thrombosis_first, asthma_first, arthritis_first, m7arthritis, m7diabetes, m7q32g, m7q32i, m7q32j, m7q32k, m7q32l, m7q32r, m7q32s, m7q32t, m7q32v, m7q32w, m7q32x, m7q32y, m7q32z, m7q32aa, m7sti, m7neuro_degen, m7bp, m7gh, m7ht, m7mh, m7pf, m7re, m7rp, m7sf, m7vt, before_after_check)
+# rename the columns
+names(w7_control_temp) <- c('idproj','sample_wave', 'breast_first', 'cervical_first', 'bowel_first', 'lung_first', 'other_first', 'skin_first', 'bronchitis_first', 'diabetes_first', 'heart_disease_first', 'hypertension_first', 'low_iron_first', 'osteoporosis_first', 'stroke_first', 'thrombosis_first', 'asthma_first', 'arthritis_first', 'arthritis', 'diabetes', 'osteoporosis', 'heart_disease', 'thrombosis', 'hypertension', 'stroke', 'low_iron', 'asthma', 'lung_infection', 'breast_cancer','cervical_cancer', 'lung_cancer', 'bowel_cancer', 'skin_cancer', 'other_cancer', 'sti', 'neuro_degen', 'bp', 'gh', 'ht', 'mh', 'pf', 're', 'rp', 'sf', 'vt', 'before_after_check')
+
+w8_control_temp <- select(w8_control, idproj, sample_wave, breast_first, cervical_first, bowel_first, lung_first, other_first, skin_first, bronchitis_first, diabetes_first, heart_disease_first, hypertension_first, low_iron_first, osteoporosis_first, stroke_first, thrombosis_first, asthma_first, arthritis_first, m8arthritis, m8diabetes, M8Q30g, M8Q30i, M8Q30j, M8Q30k, M8Q30l, M8Q30r, M8Q30s, M8Q30t, M8Q30v, M8Q30w, M8Q30x, M8Q30y, M8Q30z, M8Q30aa, m8neuro_degen, m8bp, m8gh, m8ht, m8mh, m8pf, m8re, m8rp, m8sf, m8vt, before_after_check)
+# rename the columns
+names(w8_control_temp) <- c('idproj','sample_wave', 'breast_first', 'cervical_first', 'bowel_first', 'lung_first', 'other_first', 'skin_first', 'bronchitis_first', 'diabetes_first', 'heart_disease_first', 'hypertension_first', 'low_iron_first', 'osteoporosis_first', 'stroke_first', 'thrombosis_first', 'asthma_first', 'arthritis_first', 'arthritis', 'diabetes', 'osteoporosis', 'heart_disease', 'thrombosis', 'hypertension', 'stroke', 'low_iron', 'asthma', 'lung_infection', 'breast_cancer','cervical_cancer', 'lung_cancer', 'bowel_cancer', 'skin_cancer', 'other_cancer', 'neuro_degen', 'bp', 'gh', 'ht', 'mh', 'pf', 're', 'rp', 'sf', 'vt', 'before_after_check')
+
+w9_control_temp <- select(w9_control, idproj, sample_wave, breast_first, cervical_first, bowel_first, lung_first, other_first, skin_first, bronchitis_first, diabetes_first, heart_disease_first, hypertension_first, low_iron_first, osteoporosis_first, stroke_first, thrombosis_first, asthma_first, arthritis_first, m9arthritis, m9diabetes, m9q33h, m9heart_disease, m9q33o, m9q33p, m9q33q, m9q33y, m9q33z, m9q33dd, m9q33ee, m9q33ff, m9q33gg, m9q33hh, m9q33ii, m9neuro_degen, m9sti, m9bp, m9gh, m9ht, m9mh, m9pf, m9re, m9rp, m9sf, m9vt, before_after_check)
+# rename the columns
+names(w9_control_temp) <- c('idproj','sample_wave', 'breast_first', 'cervical_first', 'bowel_first', 'lung_first', 'other_first', 'skin_first', 'bronchitis_first', 'diabetes_first', 'heart_disease_first', 'hypertension_first', 'low_iron_first', 'osteoporosis_first', 'stroke_first', 'thrombosis_first', 'asthma_first', 'arthritis_first', 'arthritis','diabetes', 'osteoporosis', 'heart_disease', 'thrombosis', 'hypertension', 'stroke', 'low_iron', 'asthma', 'breast_cancer','cervical_cancer', 'lung_cancer', 'bowel_cancer', 'skin_cancer', 'other_cancer', 'neuro_degen', 'sti', 'bp', 'gh', 'ht', 'mh', 'pf', 're', 'rp', 'sf', 'vt', 'before_after_check')
+
+# new data frame for controls
+control <- full_join(w2_control_temp,w3_control_temp)
+control <- full_join(control,w4_control_temp)
+control <- full_join(control,w5_control_temp)
+control <- full_join(control,w6_control_temp)
+control <- full_join(control,w7_control_temp)
+control <- full_join(control,w8_control_temp)
+control <- full_join(control,w9_control_temp)
+
+# remove temporary data frames from the environment
+rm(w2_control_temp, w3_control_temp, w4_control_temp, w5_control_temp, w6_control_temp, w7_control_temp, w8_control_temp, w9_control_temp)
+
+# determine whether the controls had history of co-morbidity of interest before cancer incidence
+# create new column 'diabetes_his' indicating if the observation had history of diabetes before the wave of cancer incidence; 1 = yes ;  0 = no; NA if diabetes information is missing for the observation
+control$diabetes_his <- with(control, ifelse(is.na(diabetes_first), NA, ifelse(diabetes_first != 0 & sample_wave >= diabetes_first, 1, 0)))
+
+# create new column 'hypertension_his' indicating if the observation had history of hypertension before the wave of cancer incidence; 1 = yes ;  0 = no; NA if hypertension information is missing for the observation
+control$hypertension_his <- with(control, ifelse(is.na(hypertension_first), NA, ifelse(hypertension_first != 0 & sample_wave >= hypertension_first, 1, 0)))
+
+# create new column 'heart_disease_his' indicating if the observation had history of heart_disease before the wave of cancer incidence; 1 = yes ;  0 = no; NA if heart_disease information is missing for the observation
+control$heart_disease_his <- with(control, ifelse(is.na(heart_disease_first), NA, ifelse(heart_disease_first != 0 & sample_wave >= heart_disease_first, 1, 0)))
+
+# create new column 'low_iron_his' indicating if the observation had history of low_iron before the wave of cancer incidence; 1 = yes ;  0 = no; NA if low_iron information is missing for the observation
+control$low_iron_his <- with(control, ifelse(is.na(low_iron_first), NA, ifelse(low_iron_first != 0 & sample_wave >= low_iron_first, 1, 0)))
+
+# create new column 'osteoporosis_his' indicating if the observation had history of osteoporosis before the wave of cancer incidence; 1 = yes ;  0 = no; NA if osteoporosis information is missing for the observation
+control$osteoporosis_his <- with(control, ifelse(is.na(osteoporosis_first), NA, ifelse(osteoporosis_first != 0 & sample_wave >= osteoporosis_first, 1, 0)))
+
+# create new column 'stroke_his' indicating if the observation had history of stroke before the wave of cancer incidence; 1 = yes ;  0 = no; NA if stroke information is missing for the observation
+control$stroke_his <- with(control, ifelse(is.na(stroke_first), NA, ifelse(stroke_first != 0 & sample_wave >= stroke_first, 1, 0)))
+
+# create new column 'thrombosis_his' indicating if the observation had history of thrombosis before the wave of cancer incidence; 1 = yes ;  0 = no; NA if thrombosis information is missing for the observation
+control$thrombosis_his <- with(control, ifelse(is.na(thrombosis_first), NA, ifelse(thrombosis_first != 0 & sample_wave >= thrombosis_first, 1, 0)))
+
+# create new column 'asthma_his' indicating if the observation had history of asthma before the wave of cancer incidence; 1 = yes ;  0 = no; NA if asthma information is missing for the observation
+control$asthma_his <- with(control, ifelse(is.na(asthma_first), NA, ifelse(asthma_first != 0 & sample_wave >= asthma_first, 1, 0)))
+
+# create new column 'arthritis_his' indicating if the observation had history of arthritis before the wave of cancer incidence; 1 = yes ;  0 = no; NA if arthritis information is missing for the observation
+control$arthritis_his <- with(control, ifelse(is.na(arthritis_first), NA, ifelse(arthritis_first != 0 & sample_wave >= arthritis_first, 1, 0)))
+
+# create new column 'bronchitis_his' indicating if the observation had history of bronchitis before the wave of cancer incidence; 1 = yes ;  0 = no; NA if bronchitis information is missing for the observation
+control$bronchitis_his <- with(control, ifelse(is.na(bronchitis_first), NA, ifelse(bronchitis_first != 0 & sample_wave >= bronchitis_first, 1, 0)))
+
+# create new column 'num_comorb' to access how many co-morbidity(other than cancer, excluding skin cancer) does the observation have at the wave of cancer incidence
+columns_to_check <- c('diabetes_his', 'hypertension_his', 'heart_disease_his', 'osteoporosis_his', 'stroke_his', 'thrombosis_his', 'asthma_his', 'arthritis_his', 'bronchitis_his')
+control$num_comorb <- rowSums(control[columns_to_check] == 1, na.rm = TRUE)
+
+# remove the subsets of controls for each wave to further free the environment
+rm(w2_control, w3_control, w4_control, w5_control, w6_control, w7_control, w8_control, w9_control)
+```
+
+
+```{r control_demographics, include=F,message=F,warning=F}
+# sort demographic data for cases
+# select the information from klv data set with only cases and their corresponding wave of cance incidence
+df <- klv
+df <- full_join(df,control_id,by = 'idproj')
+temp <- subset(df, df$survey == df$sample_wave)
+
+# select the variable of interest
+control_demo <- select(temp, idproj, srh, age, bmigroup, ariapgp_3gp, moi_3gp, marital_2gp, alcnhmrc_3gp, smokst_3gp, hq_3gp, cob_3gp)
+names(control_demo) <- c('idproj', 'srh', 'age', 'bmi', 'area_residence', 'income', 'marital', 'alcohol', 'smoke', 'qualification', 'country_of_birth')
+
+# join the data sets
+control <- full_join(control,control_demo, by = 'idproj') # n = 3890
+
+# remove temporary data frames from the environment
+rm(control_id, df, temp, control_demo)
+```
+
+
+```{r table_1, echo=F, message=F, warning=F}
+columns_to_check <- c('age', 'bmi', 'marital', 'smoke', 'area_residence', 'qualification' ,'income' ,'diabetes_his', 'hypertension_his', 'heart_disease_his', 'low_iron_his', 'osteoporosis_his', 'stroke_his', 'thrombosis_his', 'asthma_his', 'arthritis_his', 'bronchitis_his', 'breast_cancer','cervical_cancer', 'lung_cancer', 'bowel_cancer', 'other_cancer')
+varsToFactor <- c('bmi', 'marital', 'smoke', 'area_residence', 'qualification', 'income','diabetes_his', 'hypertension_his', 'heart_disease_his', 'low_iron_his', 'osteoporosis_his', 'stroke_his', 'thrombosis_his', 'asthma_his', 'arthritis_his', 'bronchitis_his', 'breast_cancer','cervical_cancer', 'lung_cancer', 'bowel_cancer', 'other_cancer')
+case[varsToFactor] <- lapply(case[varsToFactor], factor)
+table1_case <- CreateTableOne(vars = columns_to_check, data = case)
+
+control[varsToFactor] <- lapply(control[varsToFactor], factor)
+table1_control <- CreateTableOne(vars = columns_to_check, data = control)
+
+table1_case
+table1_control
+rm(table1_case, table1_control, varsToFactor, columns_to_check)
+```
+
+
+```{r hist_num_comorb, echo=F, message=F, warning=F}
+# Distribution of number of co-morbidity among non-cancer patients
+case_d_num_comorb <- ggplot(case, aes(x = num_comorb)) +
+  geom_histogram(aes(y = ..density..), binwidth = 1, fill = "steelblue", color = "white", alpha = 1.0) +
+  scale_x_continuous(breaks = seq(0, max(case$num_comorb, na.rm = TRUE), by = 1)) +  # Set x-axis to whole numbers
+  labs(title = "# of Comorbidity in Cases; n = 1997", x = "Number of Comorbidity", y = "Count") +
+  theme_minimal() +
+  theme(
+    panel.grid.major = element_line(color = "grey80"),
+    panel.grid.minor = element_line(color = "grey90"),
+    plot.title = element_text(size = 14, face = "bold")
+  )
+
+# Calculate the frequency tables
+hits_data <- ggplot_build(case_d_num_comorb)$data[[1]]
+total_count <- sum(hits_data$count, na.rm = TRUE)
+hits_data <- hits_data %>%
+  mutate(
+    count_label = count,
+    percent_label = paste0(round((count / total_count) * 100, 2), "%")
+  )
+
+# Add text labels for counts and percentages
+case_d_num_comorb <- case_d_num_comorb +
+  geom_text(data = hits_data, aes(x = x, y = y, label = count_label), 
+            vjust = -0.5, color = "black", size = 3.5) +
+  geom_text(data = hits_data, aes(x = x, y = y, label = percent_label), 
+            vjust = 1, color = "black", size = 3.5)
+
+# Distribution of number of co-morbidity among non-cancer patients
+control_d_num_comorb <- ggplot(control, aes(x = num_comorb)) +
+  geom_histogram(aes(y = ..density..), binwidth = 1, fill = "steelblue", color = "white", alpha = 1.0) +
+  scale_x_continuous(breaks = seq(0, max(control$num_comorb, na.rm = TRUE), by = 1)) +  # Set x-axis to whole numbers
+  labs(title = "# of Comorbidity in Controls; n = 3994", x = "Number of Comorbidity", y = "Count") +
+  theme_minimal() +
+  theme(
+    panel.grid.major = element_line(color = "grey80"),
+    panel.grid.minor = element_line(color = "grey90"),
+    plot.title = element_text(size = 14, face = "bold")
+  )
+
+# Calculate the frequency tables
+hits_data <- ggplot_build(control_d_num_comorb)$data[[1]]
+total_count <- sum(hits_data$count, na.rm = TRUE)
+hits_data <- hits_data %>%
+  mutate(
+    count_label = count,
+    percent_label = paste0(round((count / total_count) * 100, 2), "%")
+  )
+
+# Add text labels for counts and percentages
+control_d_num_comorb <- control_d_num_comorb +
+  geom_text(data = hits_data, aes(x = x, y = y, label = count_label), 
+            vjust = -0.5, color = "black", size = 3.5) +
+  geom_text(data = hits_data, aes(x = x, y = y, label = percent_label), 
+            vjust = 1, color = "black", size = 3.5)
+
+rm(hits_data)
+
+# Display the plot
+grid.arrange(case_d_num_comorb, control_d_num_comorb, ncol=2)
+
+rm(case_d_num_comorb, control_d_num_comorb, total_count)
+```
+
+
+```{r}
+# Step 1: Filter 'temp' to select rows where for each 'idproj', 'survey' matches 'cancer_first' in 'missing'
+# Create a lookup table of `idproj` to `cancer_first` values
+idproj_cancer_first <- missing %>% select(idproj, cancer_first)
+
+# Filter `temp` by matching `survey` to `cancer_first` for each `idproj`
+filtered_temp <- temp %>%
+  inner_join(idproj_cancer_first, by = "idproj") %>%
+  filter(survey == cancer_first)
+
+# Step 2: Add a column in `missing` with names of columns that have missing values for each row
+missing <- missing %>%
+  rowwise() %>%
+  mutate(missing_columns = paste(names(.)[sapply(cur_data(), is.na)], collapse = ", ")) %>%
+  ungroup()
+
+# Replace empty strings with NA for rows without any missing values
+missing$missing_columns[missing$missing_columns == ""] <- NA
+
+# Display the updated `missing` dataset
+print(missing)
+```
+

@@ -1,0 +1,1060 @@
+---
+title: "Report Visualization"
+author: "Haoyu Zhang"
+date: "2024-10-07"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r pkg,include=FALSE,message=F,warning=F}
+# setting up the environment
+library(knitr)
+library(htmltools)
+library(tinytex)
+library(dplyr)
+library(tidyverse)
+library(readr)
+library(haven)
+library(ggplot2)
+library(reshape2)
+library(gridExtra)
+library(survival)
+library(data.table)
+library(purrr)
+library(skimr)
+library(tableone)
+library(poLCA)
+library(jtools)
+library(car)
+# package 'poLCA' contains function 'MASS::select()', conflicting with 'dplyr::select()' under package 'dplyr'. Hence, we mask MASS::select explicitly, and set 'dplyr::select' as default.
+select <- dplyr::select
+library(tidyr)
+library(AER)
+library(extrafont)
+loadfonts(device = "win")
+```
+
+
+```{r import_data_&_data_cleaning, include = F, message = F, warning = F}
+# import clean data set with classes
+case <- read_csv("C:/Users/user/Desktop/PHBH5610/case_class_5")
+
+# class modification
+case <- case %>%
+  mutate(class = case_when(
+    class == 1 ~ 2,                  # Rename class 1 to 4
+    class == 2 ~ 1,                  # Rename class 2 to 1
+    class == 3 ~ 5,                  # Rename class 3 to 2
+    class == 4 ~ 4,                  # Rename class 4 to 3
+    class == 5 ~ 3
+  ))
+
+# class grouping
+# 1. combine class 1 and class 4, rename to group 3+4
+# 2. rename class 2 to class 1, class 3 to class 2
+case <- case %>%
+  mutate(cc = case_when(
+    class %in% c(4, 5) ~ "4+5",  # Combine class 1 and 4
+    class == 1 ~ "1",                 
+    class == 2 ~ "2",
+    class == 3 ~ "3"
+  ))
+
+case <- case %>%
+  mutate(num_comorb_c = case_when(
+    num_comorb == 0 ~ 'None',
+    num_comorb %in% c(1,2) ~ '1 or 2 conditions',
+    num_comorb %in% c(3,4) ~ '3 or 4 conditions',
+    num_comorb >= 5 ~ '5 or more'
+  ))
+
+case <- case %>%
+  mutate(exercise2grp = case_when(
+    exercise %in% c(1,2) ~ "Nil/Sedentary or Low",
+    exercise %in% c(3,4) ~ "Moderate or High"
+  ))
+
+case$diabetes_his <- with(case, ifelse(is.na(diabetes_his), 0, diabetes_his))
+
+# factor the variables
+varsToFactor <- c('bmi', 'marital', 'smoke', 'area_residence', 
+                  'qualification', 'income','diabetes_his', 
+                  'hypertension_his', 'heart_disease_his', 
+                  'low_iron_his', 'osteoporosis_his', 'stroke_his', 
+                  'thrombosis_his', 'asthma_his', 'arthritis_his', 
+                  'bronchitis_his', 'breast_cancer','cervical_cancer', 
+                  'lung_cancer', 'bowel_cancer', 'other_cancer', 
+                  'country_of_birth', 'class', 'cc', 'num_comorb_c', 'exercise')
+case[varsToFactor] <- lapply(case[varsToFactor], factor)
+
+case$bmi <- factor(case$bmi, levels = c(2,1,3,4))
+case$income <- factor(case$income, levels = c(3,2,1))
+
+# combine lung cancer to other cancer
+case <- case %>%
+  mutate(lung_other_first = case_when(
+    is.na(lung_first) & is.na(other_first) ~ NA_real_,  # Both are NA
+    lung_first == 0 & other_first == 0 ~ 0,             # Both are 0
+    TRUE ~ pmin(ifelse(lung_first == 0, NA, lung_first), 
+                ifelse(other_first == 0, NA, other_first), 
+                na.rm = TRUE)   # Smallest non-zero value, treating 0 as NA
+  ))
+
+case <- case %>%
+  mutate(site = apply(case[, c("breast_first", "bowel_first", "cervical_first", "lung_other_first")], 1, function(x) {
+    # Define a named vector for the mappings
+    condition_labels <- c(breast_first = "breast", 
+                          bowel_first = "bowel", 
+                          cervical_first = "cervical", 
+                          lung_other_first = "other")
+    
+    # Find the smallest non-zero value
+    min_value <- min(x[x != 0], na.rm = TRUE)
+    
+    # Identify columns with the smallest non-zero value
+    matching_conditions <- names(x)[x == min_value]
+    
+    # Map the column names to the desired labels
+    matching_labels <- condition_labels[matching_conditions]
+    
+    # Return 'multiple' if there are ties, else return the specific label, or NA if empty
+    if (length(matching_labels) > 1) {
+      return("multiple")
+    } else if (length(matching_labels) == 1) {
+      return(matching_labels)
+    } else {
+      return(NA)
+    }
+  }))
+```
+
+
+```{r contingency, echo = F, message = F, warning = F, fig.width=6, fig.height=5, dpi=600}
+# Data preparation
+graph <- data.frame(
+  arthritis = c(15,	35,	39,	24,	21,	53,	28,	8,	15),
+  asthma = c(55,	10,	61,	24,	24,	53,	26,	13,	17),
+  bronchitis = c(54,	53,	11,	25,	24,	53,	25,	11,	17),
+  diabetes = c(63,	41,	48,	7,	32,	72,	26,	19,	19),
+  heart_disease = c(65,	50,	55,	40,	7,	70,	37,	23,	23),
+  hypertension = c(55,	35,	40,	28,	23,	16,	22,	9,	15),
+  osteoporosis = c(69,	41,	45,	24,	28,	53,	10,	17,	23),
+  stroke = c(73,	73,	75,	65,	65,	77,	63,	2,	38),
+  thrombosis = c(59,	44,	48,	30,	29,	58,	36,	17,	10)
+)
+
+rownames(graph) <- c('arthritis', 'asthma', 'bronchitis', 'diabetes', 
+                     'heart disease', 'hypertension', 'osteoporosis', 
+                     'stroke', 'thrombosis')
+colnames(graph) <- c('arthritis 854 43%', 'asthma 551 28%', 'bronchitis 630 32%', 
+                     'diabetes 330 17%', 'heart disease 270 14%', 
+                     'hypertension 833 42%', 'osteoporosis 349 17%', 
+                     'stroke 96 5%', 'thrombosis 217 11%')
+
+# Convert the data frame to a long format for ggplot
+graph_long <- reshape2::melt(as.matrix(graph))
+graph_long$Var1 <- factor(graph_long$Var1, levels = rev(sort(unique(graph_long$Var1))))
+graph_long$Var2 <- factor(graph_long$Var2, levels = rev(sort(unique(graph_long$Var2))))
+
+# Heatmap
+ggplot(graph_long, aes(Var1, Var2, fill = value)) + 
+  geom_tile(color = "white") + 
+  scale_fill_gradient(low = "white", high = "#9c89b8") +
+  geom_text(aes(label = value), color = "black", family = "Times New Roman") +
+  theme_minimal() +
+  labs(title = "Figure 2 - Contingency Heatmap of Condition Co-occurrence Percentages", x = "", y = "") +
+  theme(
+    axis.text.x = element_text(size = 10, angle = 60, hjust = 1, vjust = 1,
+                               family = "Times New Roman"),
+    axis.text.y = element_text(size = 10, family = "Times New Roman"),
+    plot.title = element_text(size = 12, hjust = 1.17, vjust = 1, 
+                              family = "Times New Roman"),
+    text = element_text(family = "Times New Roman")
+  ) +
+  coord_fixed() # make tiles squares instead of rectangles
+```
+
+
+```{r demographics_table_1, include = F, message = F, warning = F}
+c1 <- subset(case, class == 1)
+c2 <- subset(case, class == 2)
+c3 <- subset(case, class == 3)
+c4 <- subset(case, class == 4)
+c5 <- subset(case, class == 5)
+
+
+columns_to_check <- c('age', 'site', 'num_comorb_c', 'marital', 'income', 
+                      'qualification', 'area_residence', 'country_of_birth',
+                      'bmi', 'smoke', 'exercise2grp')
+condition_columns <- c("arthritis_his", 'asthma_his', 'bronchitis_his', 
+                       'diabetes_his', 'hypertension_his', 'heart_disease_his',
+                       'osteoporosis_his', 'stroke_his', 'thrombosis_his')
+CreateTableOne(vars = columns_to_check, data = c1)
+```
+
+
+```{r, fig.width=8, fig.height=7, fig.align='center', out.width='100%', dpi=600, echo = F, message = F, warning = F}
+# Define parameter labels as usual
+parameter_labels <- c(
+  "arthritis_his" = "arthritis",
+  "asthma_his" = "asthma",
+  "bronchitis_his" = "bronchitis",
+  "diabetes_his" = "diabetes",
+  "heart_disease_his" = "heart disease",
+  "hypertension_his" = "hypertension",
+  "osteoporosis_his" = "osteoporosis",
+  "stroke_his" = "stroke",
+  "thrombosis_his" = "thrombosis"
+)
+
+titles <- c(
+  "Class 1 Relatively Healthy, n = 1255 (62.8%)", 
+  "Class 2 Likely hypertensive and diabetic, n = 216 (10.8%)", 
+  "Class 3 Likely to have arthritis and osteoporosis, n = 186 (9.3%)", 
+  "Class 4 Likely to have respiratory conditions, n = 274 (13.7%)", 
+  "Class 5 Likely to have most conditions, n = 66 (3.3%)"
+)
+
+# Sort parameters alphabetically and then reverse the order
+parameters <- sort(names(parameter_labels), decreasing = TRUE)
+
+# Create a list to store plots
+plots <- list()
+
+# Loop over each class and generate a plot with a unique title
+for (class_number in 1:5) {
+  # Filter data for the specific class
+  class_data <- case %>% filter(class == class_number)
+  
+  # Calculate percentages for each parameter
+  class_data_long <- class_data %>%
+    select(all_of(parameters)) %>%
+    pivot_longer(cols = everything(), names_to = "Parameter", values_to = "Value") %>%
+    group_by(Parameter, Value) %>%
+    summarise(Count = n(), .groups = "drop") %>%
+    mutate(Percent = Count / sum(Count) * 100) %>%
+    mutate(Parameter = factor(Parameter, levels = parameters)) # Reverse alphabetical order
+  
+  # Assign a specific title for the current class
+  plot_title <- titles[class_number]
+  
+  # Create the plot and store it in the list
+  p <- ggplot(class_data_long, aes(x = Percent, y = Parameter, fill = factor(Value))) +
+  geom_bar(stat = "identity", position = "fill", width = 0.7) +
+  scale_fill_manual(values = c("0" = "#ffdbe4", "1" = "#9c89b8"), name = "Value") +
+  scale_y_discrete(labels = parameter_labels[parameters]) +
+  labs(title = plot_title, y = "", x = "") +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.title = element_text(size = 12),
+    axis.text = element_text(size = 10, vjust = 0),
+    plot.title = element_text(size = 10.5, hjust = 0, vjust = 1), # Left-align titles uniformly
+    plot.title.position = "plot", # Position titles relative to the entire plot
+    plot.margin = margin(t = 2, r = 10, b = 2, l = 20), # Positive left margin for consistent spacing
+    text = element_text(family = "Times New Roman")
+  )
+  
+  # Store the plot in the list
+  plots[[class_number]] <- p
+}
+
+# Arrange all plots in a grid with aligned titles
+grid.arrange(grobs = plots, ncol = 2)
+```
+
+
+```{r, fig.width=9, fig.height=7.5, fig.align='center', out.width='100%', dpi=600, echo = F, message = F, warning = F}
+# Loop over each class and generate a plot with a unique title
+for (class_number in 1:5) {
+  # Filter data for the specific class
+  class_data <- case %>% filter(class == class_number)
+  
+  # Calculate percentages for each parameter based on the total count for each class
+  class_data_long <- class_data %>%
+    select(all_of(parameters)) %>%
+    pivot_longer(cols = everything(), names_to = "Parameter", values_to = "Value") %>%
+    group_by(Parameter, Value) %>%
+    summarise(Count = n(), .groups = "drop") %>%
+    group_by(Parameter) %>%
+    mutate(Percent = Count / sum(Count) * 100) %>%
+    ungroup() %>%
+    mutate(Parameter = factor(Parameter, levels = parameters)) # Reverse alphabetical order
+  
+  # Assign a specific title for the current class
+  plot_title <- titles[class_number]
+  
+  # Create the plot and store it in the list
+  p <- ggplot(class_data_long, aes(x = Percent, y = Parameter, fill = factor(Value))) +
+    geom_bar(stat = "identity", width = 0.7) +
+    # Add labels for the purple sections (Value == 1), aligned at x = 105
+    geom_text(data = subset(class_data_long, Value == 1), 
+              aes(label = sprintf("%.1f%%", Percent)), 
+              x = 125, # Position labels at x = 105
+              hjust = 1, # Left-align the labels at this fixed position
+              size = 3, 
+              color = "black", 
+              family = "Times New Roman") +
+    scale_fill_manual(values = c("0" = "#ffdbe4", "1" = "#9c89b8"), name = "Value") +
+    scale_y_discrete(labels = parameter_labels[parameters]) +
+    labs(title = plot_title, y = "", x = "Percentage") +
+    theme_minimal() +
+    theme(
+      legend.position = "none",
+      axis.title = element_text(size = 12),
+      axis.text = element_text(size = 10, vjust = 0.5),
+      plot.title = element_text(size = 10.5, hjust = 0, vjust = 1), 
+      plot.title.position = "plot", 
+      plot.margin = margin(t = 5, r = 13, b = 5, l = 13), 
+      panel.grid = element_blank(),
+      text = element_text(family = "Times New Roman", size = 11)
+    ) +
+    coord_cartesian(xlim = c(0, 120)) 
+
+  plots[[class_number]] <- p
+}
+
+# Arrange all plots in a grid with aligned titles
+grid.arrange(grobs = plots, ncol = 2)
+```
+
+
+```{r, fig.width=9, fig.height=7.5, fig.align='center', out.width='100%', dpi=600, echo = F, message = F, warning = F}
+# Function to extract the legend from a plot
+get_legend <- function(myplot) {
+  g <- ggplotGrob(myplot)
+  legend <- g$grobs[which(sapply(g$grobs, function(x) x$name) == "guide-box")][[1]]
+  return(legend)
+}
+
+# Create a dummy plot to generate the customized legend
+sample_plot <- ggplot(class_data_long, aes(x = Percent, y = Parameter, fill = factor(Value))) +
+  geom_bar(stat = "identity", width = 0.7) +
+  scale_fill_manual(
+    values = c("0" = "#ffdbe4", "1" = "#9c89b8"),
+    name = "Condition Status",  # Custom legend title
+    labels = c("Absent", "Present")  # Custom labels
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",  # Set legend at the bottom for extraction
+    legend.title = element_text(size = 12, face = "bold", family = "Times New Roman"),
+    legend.text = element_text(size = 10, family = "Times New Roman"),
+    legend.key.size = unit(0.8, "cm"),
+    legend.spacing.x = unit(0.5, "cm")
+  )
+
+# Extract the customized legend
+shared_legend <- get_legend(sample_plot)
+
+# Initialize an empty list to store plots
+plots <- list()
+
+# Loop over each class and generate a plot with a unique title
+for (class_number in 1:5) {
+  # Filter data for the specific class
+  class_data <- case %>% filter(class == class_number)
+  
+  # Calculate percentages for each parameter based on the total count for each class
+  class_data_long <- class_data %>%
+    select(all_of(parameters)) %>%
+    pivot_longer(cols = everything(), names_to = "Parameter", values_to = "Value") %>%
+    group_by(Parameter, Value) %>%
+    summarise(Count = n(), .groups = "drop") %>%
+    group_by(Parameter) %>%
+    mutate(Percent = Count / sum(Count) * 100) %>%
+    ungroup() %>%
+    mutate(Parameter = factor(Parameter, levels = parameters)) # Reverse alphabetical order
+  
+  # Assign a specific title for the current class
+  plot_title <- titles[class_number]
+  
+  # Create the plot for the current class without the legend
+  p <- ggplot(class_data_long, aes(x = Percent, y = Parameter, fill = factor(Value))) +
+    geom_bar(stat = "identity", width = 0.7) +
+    geom_text(data = subset(class_data_long, Value == 1), 
+              aes(label = sprintf("%.1f%%", Percent)), 
+              x = 125, 
+              hjust = 1, 
+              size = 3, 
+              color = "black", 
+              family = "Times New Roman") +
+    scale_fill_manual(
+      values = c("0" = "#ffdbe4", "1" = "#9c89b8"),
+      name = "Condition Status",
+      labels = c("Absent", "Present")
+    ) +
+    scale_y_discrete(labels = parameter_labels[parameters]) +
+    labs(title = plot_title, y = "", x = "Percentage") +
+    theme_minimal() +
+    theme(
+      legend.position = "none", # Suppress the individual legends
+      axis.title = element_text(size = 12),
+      axis.text = element_text(size = 9, vjust = 0.5),
+      plot.title = element_text(size = 10.5, hjust = 0, vjust = 1),
+      plot.title.position = "plot",
+      plot.margin = margin(t = 2, r = 15, b = 2, l = 15),
+      panel.grid = element_blank(),
+      text = element_text(family = "Times New Roman")
+    ) +
+    coord_cartesian(xlim = c(0, 120))
+  
+  # Store each plot in the list
+  plots[[class_number]] <- p
+}
+
+# Arrange the plots in a grid with the shared legend at the bottom
+grid.arrange(
+  arrangeGrob(grobs = plots, ncol = 2),
+  shared_legend,
+  ncol = 1,
+  heights = c(8, 1)
+)
+```
+
+```{r forest_gh, fig.width=7.5, fig.height=2, fig.align='center', out.width='100%', dpi=600, echo = F, message = F, warning = F}
+# Create a fictional dataset
+data <- data.frame(
+  Condition = c('Class 1 Relatively healthy (Reference) -', 
+                'Class 2 Likely hypertensive and diabetic -',
+                'Class 3 Likely to have arthiritis and osteoporosis -',
+                'Class 4 Likely to have respiratory conditions -',
+                'Class 5 Likely to have most conditions -'),
+  Estimate = c(0, -9.92, -11.41, -10.95, 2.36),
+  LowerCI = c(0, -6.47, -7.72, -7.83, -3.54),
+  UpperCI = c(0, -13.37, -15.10, -14.07, 8.27),
+  Pvalue = c('', '< 0.01', '< 0.01', '< 0.01', '0.433')
+)
+
+# Reorder the conditions for plotting
+data <- data %>%
+  mutate(Condition = factor(Condition, levels = rev(Condition)))
+
+# Add a column for the text label of Estimate and CI
+data <- data %>%
+  mutate(
+    Estimate_Label = sprintf("%.2f", Estimate),
+    CI_Label = sprintf("(%.2f, %.2f)", LowerCI, UpperCI)
+  )
+
+data[is.na(data)] <- 0
+
+# Define custom breaks and labels for the x-axis
+x_limits <- c(-20, 40)
+custom_breaks <- c(-20, -15, -10, -5, 0, 5, 10, 15, 20, 40)
+custom_labels <- c("-20", "-15", "-10", "-5", "0", "5", "10", "", "", "")
+
+# Updated annotation positions to avoid overlap
+ggplot(data, aes(x = Estimate, y = Condition)) +
+  geom_vline(xintercept = 0, linetype = "solid", color = "grey") +
+  geom_vline(xintercept = c(-20, -15, -10, -5, 5, 10), 
+             linetype = "dashed", color = "lightgrey") +
+  geom_errorbarh(aes(xmin = LowerCI, xmax = UpperCI),
+                 height = 0.2, color = "#9c89b8", linewidth = 0.8) +
+  geom_point(shape = 17, color = "#9c89b8", size = 2.5) +
+  theme_minimal() +
+  labs(title = "a. General Health", x = "", y = "") +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_text(size = 10, family = "Times New Roman"),
+    plot.title = element_text(size = 11, face = "bold",
+                              family = "Times New Roman", hjust = -0.91),
+    text = element_text(family = "Times New Roman")
+  ) +
+  scale_x_continuous(breaks = custom_breaks, labels = custom_labels, 
+                     limits = x_limits) +
+  annotate("text", x = 17, y = data$Condition, label = data$Estimate_Label, 
+           hjust = 0.5, family = "Times New Roman", size = 3) +
+  annotate("text", x = 27, y = data$Condition, label = data$CI_Label, 
+           hjust = 0.5, family = "Times New Roman", size = 3) +
+  # Annotate the p-values
+  annotate("text", x = 37, y = data$Condition, label = data$Pvalue, 
+           hjust = 0.5, family = "Times New Roman", size = 3)
+```
+
+
+```{r forest_pf, fig.width=7.5, fig.height=2, fig.align='center', out.width='100%', dpi=600, echo = F, message = F, warning = F}
+# Create a fictional dataset
+data <- data.frame(
+  Condition = c('Class 1 Relatively healthy (Reference) -', 
+                'Class 2 Likely hypertensive and diabetic -',
+                'Class 3 Likely to have arthiritis and osteoporosis -',
+                'Class 4 Likely to have respiratory conditions -',
+                'Class 5 Likely to have most conditions -'),
+  Estimate = c(0, -9.41, -11.88, -10.00, -3.39),
+  LowerCI = c(0, -12.82, -15.56, -13.12, -9.26),
+  UpperCI = c(0, -5.99, -8.20, -6.87, 2.48),
+  Pvalue = c('', '< 0.01', '< 0.01', '< 0.01', '0.26')
+)
+
+# Reorder the conditions for plotting
+data <- data %>%
+  mutate(Condition = factor(Condition, levels = rev(Condition)))
+
+# Add a column for the text label of Estimate and CI
+data <- data %>%
+  mutate(
+    Estimate_Label = sprintf("%.2f", Estimate),
+    CI_Label = sprintf("(%.2f, %.2f)", LowerCI, UpperCI)
+  )
+
+data[is.na(data)] <- 0
+
+# Define custom breaks and labels for the x-axis
+x_limits <- c(-20, 40)
+custom_breaks <- c(-20, -15, -10, -5, 0, 5, 10, 15, 20, 40)
+custom_labels <- c("-20", "-15", "-10", "-5", "0", "5", "10", "", "", "")
+
+# Updated annotation positions to avoid overlap
+ggplot(data, aes(x = Estimate, y = Condition)) +
+  geom_vline(xintercept = 0, linetype = "solid", color = "grey") +
+  geom_vline(xintercept = c(-20, -15, -10, -5, 5, 10), 
+             linetype = "dashed", color = "lightgrey") +
+  geom_errorbarh(aes(xmin = LowerCI, xmax = UpperCI),
+                 height = 0.2, color = "#9c89b8", linewidth = 0.8) +
+  geom_point(shape = 17, color = "#9c89b8", size = 2.5) +
+  theme_minimal() +
+  labs(title = "b. Physical Functioning", x = "", y = "") +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_text(size = 10, family = "Times New Roman"),
+    plot.title = element_text(size = 11, face = "bold",
+                              family = "Times New Roman", hjust = -1.03),
+    text = element_text(family = "Times New Roman")
+  ) +
+  scale_x_continuous(breaks = custom_breaks, labels = custom_labels, 
+                     limits = x_limits) +
+  annotate("text", x = 17, y = data$Condition, label = data$Estimate_Label, 
+           hjust = 0.5, family = "Times New Roman", size = 3) +
+  annotate("text", x = 27, y = data$Condition, label = data$CI_Label, 
+           hjust = 0.5, family = "Times New Roman", size = 3) +
+  # Annotate the p-values
+  annotate("text", x = 37, y = data$Condition, label = data$Pvalue, 
+           hjust = 0.5, family = "Times New Roman", size = 3)
+```
+
+```{r forest_mh, fig.width=7.5, fig.height=2, fig.align='center', out.width='100%', dpi=600, echo = F, message = F, warning = F}
+# Create a fictional dataset
+data <- data.frame(
+  Condition = c('Class 1 Relatively healthy (Reference) -', 
+                'Class 2 Likely hypertensive and diabetic -',
+                'Class 3 Likely to have arthiritis and osteoporosis -',
+                'Class 4 Likely to have respiratory conditions -',
+                'Class 5 Likely to have most conditions -'),
+  Estimate = c(0, -3.97, -6.95, -3.74, -0.34),
+  LowerCI = c(0, -6.66, -9.85, -6.19, -4.96),
+  UpperCI = c(0, -1.27, -4.05, -1.29, 4.28),
+  Pvalue = c('', '< 0.01', '< 0.01', '< 0.01', '0.88')
+)
+
+# Reorder the conditions for plotting
+data <- data %>%
+  mutate(Condition = factor(Condition, levels = rev(Condition)))
+
+# Add a column for the text label of Estimate and CI
+data <- data %>%
+  mutate(
+    Estimate_Label = sprintf("%.2f", Estimate),
+    CI_Label = sprintf("(%.2f, %.2f)", LowerCI, UpperCI)
+  )
+
+data[is.na(data)] <- 0
+
+# Define custom breaks and labels for the x-axis
+x_limits <- c(-20, 40)
+custom_breaks <- c(-20, -15, -10, -5, 0, 5, 10, 15, 20, 40)
+custom_labels <- c("-20", "-15", "-10", "-5", "0", "5", "10", "", "", "")
+
+# Updated annotation positions to avoid overlap
+ggplot(data, aes(x = Estimate, y = Condition)) +
+  geom_vline(xintercept = 0, linetype = "solid", color = "grey") +
+  geom_vline(xintercept = c(-20, -15, -10, -5, 5, 10), 
+             linetype = "dashed", color = "lightgrey") +
+  geom_errorbarh(aes(xmin = LowerCI, xmax = UpperCI),
+                 height = 0.2, color = "#9c89b8", linewidth = 0.8) +
+  geom_point(shape = 17, color = "#9c89b8", size = 2.5) +
+  theme_minimal() +
+  labs(title = "c. Mental Health", x = "", y = "") +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_text(size = 10, family = "Times New Roman"),
+    plot.title = element_text(size = 11, face = "bold",
+                              family = "Times New Roman", hjust = -0.90),
+    text = element_text(family = "Times New Roman")
+  ) +
+  scale_x_continuous(breaks = custom_breaks, labels = custom_labels, limits = x_limits) +
+  annotate("text", x = 17, y = data$Condition, label = data$Estimate_Label, 
+           hjust = 0.5, family = "Times New Roman", size = 3) +
+  annotate("text", x = 27, y = data$Condition, label = data$CI_Label, 
+           hjust = 0.5, family = "Times New Roman", size = 3) +
+  # Annotate the p-values
+  annotate("text", x = 37, y = data$Condition, label = data$Pvalue, 
+           hjust = 0.5, family = "Times New Roman", size = 3)
+```
+
+```{r forest_vt, fig.width=7.5, fig.height=2, fig.align='center', out.width='100%', dpi=600, echo = F, message = F, warning = F}
+# Create a fictional dataset
+data <- data.frame(
+  Condition = c('Class 1 Relatively healthy (Reference) -', 
+                'Class 2 Likely hypertensive and diabetic -',
+                'Class 3 Likely to have arthiritis and osteoporosis -',
+                'Class 4 Likely to have respiratory conditions -',
+                'Class 5 Likely to have most conditions -'),
+  Estimate = c(0, -6.98, -10.11, -10.31, 1.99),
+  LowerCI = c(0, -10.28, -13.66, -13.30, -3.66),
+  UpperCI = c(0, -3.69, -6.55, -7.31, 7.65),
+  Pvalue = c('', '< 0.01', '< 0.01', '< 0.01', '0.49')
+)
+
+# Reorder the conditions for plotting
+data <- data %>%
+  mutate(Condition = factor(Condition, levels = rev(Condition)))
+
+# Add a column for the text label of Estimate and CI
+data <- data %>%
+  mutate(
+    Estimate_Label = sprintf("%.2f", Estimate),
+    CI_Label = sprintf("(%.2f, %.2f)", LowerCI, UpperCI)
+  )
+
+data[is.na(data)] <- 0
+
+# Define custom breaks and labels for the x-axis
+x_limits <- c(-20, 40)
+custom_breaks <- c(-20, -15, -10, -5, 0, 5, 10, 15, 20, 40)
+custom_labels <- c("-20", "-15", "-10", "-5", "0", "5", "10", "", "", "")
+
+# Updated annotation positions to avoid overlap
+ggplot(data, aes(x = Estimate, y = Condition)) +
+  geom_vline(xintercept = 0, linetype = "solid", color = "grey") +
+  geom_vline(xintercept = c(-20, -15, -10, -5, 5, 10), 
+             linetype = "dashed", color = "lightgrey") +
+  geom_errorbarh(aes(xmin = LowerCI, xmax = UpperCI),
+                 height = 0.2, color = "#9c89b8", linewidth = 0.8) +
+  geom_point(shape = 17, color = "#9c89b8", size = 2.5) +
+  theme_minimal() +
+  labs(title = "d. Vitality", x = "", y = "") +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_text(size = 10, family = "Times New Roman"),
+    plot.title = element_text(size = 11, face = "bold",
+                              family = "Times New Roman", hjust = -0.78),
+    text = element_text(family = "Times New Roman")
+  ) +
+  scale_x_continuous(breaks = custom_breaks, labels = custom_labels, limits = x_limits) +
+  annotate("text", x = 17, y = data$Condition, label = data$Estimate_Label, 
+           hjust = 0.5, family = "Times New Roman", size = 3) +
+  annotate("text", x = 27, y = data$Condition, label = data$CI_Label, 
+           hjust = 0.5, family = "Times New Roman", size = 3) +
+  # Annotate the p-values
+  annotate("text", x = 37, y = data$Condition, label = data$Pvalue, 
+           hjust = 0.5, family = "Times New Roman", size = 3)
+```
+
+
+```{r forest_bp, fig.width=7.5, fig.height=2, fig.align='center', out.width='100%', dpi=600, echo = F, message = F, warning = F}
+# Create a fictional dataset
+data <- data.frame(
+  Condition = c('Class 1 Relatively healthy (Reference) -', 
+                'Class 2 Likely hypertensive and diabetic -',
+                'Class 3 Likely to have arthiritis and osteoporosis -',
+                'Class 4 Likely to have respiratory conditions -',
+                'Class 5 Likely to have most conditions -'),
+  Estimate = c(0, -5.39, -14.49, -10.68, -1.125),
+  LowerCI = c(0, -9.13, -18.51, -14.08, -7.54),
+  UpperCI = c(0, -1.65, -10.46, -7.28, 5.29),
+  Pvalue = c('', '< 0.01', '< 0.01', '< 0.01', '0.73')
+)
+
+# Reorder the conditions for plotting
+data <- data %>%
+  mutate(Condition = factor(Condition, levels = rev(Condition)))
+
+# Add a column for the text label of Estimate and CI
+data <- data %>%
+  mutate(
+    Estimate_Label = sprintf("%.2f", Estimate),
+    CI_Label = sprintf("(%.2f, %.2f)", LowerCI, UpperCI)
+  )
+
+data[is.na(data)] <- 0
+
+# Define custom breaks and labels for the x-axis
+x_limits <- c(-20, 40)
+custom_breaks <- c(-20, -15, -10, -5, 0, 5, 10, 15, 20, 40)
+custom_labels <- c("-20", "-15", "-10", "-5", "0", "5", "10", "", "", "")
+
+# Updated annotation positions to avoid overlap
+ggplot(data, aes(x = Estimate, y = Condition)) +
+  geom_vline(xintercept = 0, linetype = "solid", color = "grey") +
+  geom_vline(xintercept = c(-20, -15, -10, -5, 5, 10), 
+             linetype = "dashed", color = "lightgrey") +
+  geom_errorbarh(aes(xmin = LowerCI, xmax = UpperCI),
+                 height = 0.2, color = "#9c89b8", linewidth = 0.8) +
+  geom_point(shape = 17, color = "#9c89b8", size = 2.5) +
+  theme_minimal() +
+  labs(title = "e. Bodily Pain", x = "", y = "") +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_text(size = 10, family = "Times New Roman"),
+    plot.title = element_text(size = 11, face = "bold", 
+                              family = "Times New Roman", hjust = -0.85),
+    text = element_text(family = "Times New Roman")
+  ) +
+  scale_x_continuous(breaks = custom_breaks, labels = custom_labels, limits = x_limits) +
+  annotate("text", x = 17, y = data$Condition, label = data$Estimate_Label, 
+           hjust = 0.5, family = "Times New Roman", size = 3) +
+  annotate("text", x = 27, y = data$Condition, label = data$CI_Label, 
+           hjust = 0.5, family = "Times New Roman", size = 3) +
+  # Annotate the p-values
+  annotate("text", x = 37, y = data$Condition, label = data$Pvalue, 
+           hjust = 0.5, family = "Times New Roman", size = 3)
+```
+
+
+
+```{r forest_gh_vs_condition, fig.width=7.5, fig.height=2.5, fig.align='center', out.width='100%', dpi=600, echo = F, message = F, warning = F}
+# Create a fictional dataset
+data <- data.frame(
+  Condition = c('Has arthritis history vs. No arthritis history -', 
+                'Has asthma history vs. No asthma hisotry -',
+                'Has bronchitis history vs. No bronchitis history -',
+                'Has diabetes history vs. No diabetes history -',
+                'Has heart disease history vs. No heart disease history -',
+                'Has hypertension history vs. No hypertension history -',
+                'Has osteoporosis history vs. No osteoporosis history -',
+                'Has stroke history vs. No stroke history -',
+                'Has thrombosis history vs. No thrombosis history -'
+                ),
+  Estimate = c(-7.26, -5.14, -5.74, -2.55, -6.57, -5.82, -2.57, 2.55, -5.25),
+  LowerCI = c(-9.56, -7.51, -8.00, -5.44, -9.68, -7.97, -5.34, -2.46, -8.62),
+  UpperCI = c(-4.95, -2.77, -3.48, 0.35, -3.47, -3.67, 0.21, 7.56, -1.89),
+  Pvalue = c('< 0.01', '< 0.01', '< 0.01', '0.09', '< 0.01', 
+             '< 0.01', '0,07', '0.32', '< 0.01')
+)
+
+# Reorder the conditions for plotting
+data <- data %>%
+  mutate(Condition = factor(Condition, levels = rev(Condition)))
+
+# Add a column for the text label of Estimate and CI
+data <- data %>%
+  mutate(
+    Estimate_Label = sprintf("%.2f", Estimate),
+    CI_Label = sprintf("(%.2f, %.2f)", LowerCI, UpperCI)
+  )
+
+data[is.na(data)] <- 0
+
+# Define custom breaks and labels for the x-axis
+x_limits <- c(-15, 40)
+custom_breaks <- c(-15, -10, -5, 0, 5, 10, 15, 20, 40)
+custom_labels <- c("-15", "-10", "-5", "0", "5", "10", "", "", "")
+
+# Updated annotation positions to avoid overlap
+ggplot(data, aes(x = Estimate, y = Condition)) +
+  geom_vline(xintercept = 0, linetype = "solid", color = "grey") +
+  geom_vline(xintercept = c(-20, -15, -10, -5, 5, 10), 
+             linetype = "dashed", color = "lightgrey") +
+  geom_errorbarh(aes(xmin = LowerCI, xmax = UpperCI),
+                 height = 0.2, color = "#9c89b8", linewidth = 0.8) +
+  geom_point(shape = 17, color = "#9c89b8", size = 2.5) +
+  theme_minimal() +
+  labs(title = "a. General Health", x = "", y = "") +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_text(size = 10, family = "Times New Roman"),
+    axis.text.x = element_text(size = 10, family = "Times New Roman"),
+    plot.title = element_text(size = 11, face = "bold", 
+                              family = "Times New Roman", hjust = -0.85),
+    text = element_text(family = "Times New Roman")
+  ) +
+  scale_x_continuous(breaks = custom_breaks, labels = custom_labels, limits = x_limits) +
+  annotate("text", x = 17, y = data$Condition, label = data$Estimate_Label, 
+           hjust = 0.5, family = "Times New Roman", size = 3) +
+  annotate("text", x = 27, y = data$Condition, label = data$CI_Label, 
+           hjust = 0.5, family = "Times New Roman", size = 3) +
+  # Annotate the p-values
+  annotate("text", x = 37, y = data$Condition, label = data$Pvalue, 
+           hjust = 0.5, family = "Times New Roman", size = 3)
+```
+
+```{r forest_pf_vs_condition, fig.width=7.5, fig.height=2.5, fig.align='center', out.width='100%', dpi=600, echo = F, message = F, warning = F}
+# Create a fictional dataset
+data <- data.frame(
+  Condition = c('Has arthritis history vs. No arthritis history -', 
+                'Has asthma history vs. No asthma hisotry -',
+                'Has bronchitis history vs. No bronchitis history -',
+                'Has diabetes history vs. No diabetes history -',
+                'Has heart disease history vs. No heart disease history -',
+                'Has hypertension history vs. No hypertension history -',
+                'Has osteoporosis history vs. No osteoporosis history -',
+                'Has stroke history vs. No stroke history -',
+                'Has thrombosis history vs. No thrombosis history -'
+                ),
+  Estimate = c(-8.73, -5.95, -4.89, -4.67, -5.14, -6.58, -4.56, -0.99, -7.18),
+  LowerCI = c(-11.00, -8.30, -7.14, -7.53, -8.21, -8.71, -7.30, -5.97, -10.52),
+  UpperCI = c(-6.46, -3.61, -2.64, -1.81, -2.06, -4.46, -1.81, 3.99, -3.84),
+  Pvalue = c('< 0.01', '< 0.01', '< 0.01', '< 0.01', '< 0.01', 
+             '< 0.01', '< 0.01', '0.70', '< 0.01')
+)
+
+# Reorder the conditions for plotting
+data <- data %>%
+  mutate(Condition = factor(Condition, levels = rev(Condition)))
+
+# Add a column for the text label of Estimate and CI
+data <- data %>%
+  mutate(
+    Estimate_Label = sprintf("%.2f", Estimate),
+    CI_Label = sprintf("(%.2f, %.2f)", LowerCI, UpperCI)
+  )
+
+data[is.na(data)] <- 0
+
+# Define custom breaks and labels for the x-axis
+x_limits <- c(-15, 40)
+custom_breaks <- c(-15, -10, -5, 0, 5, 10, 15, 20, 40)
+custom_labels <- c("-15", "-10", "-5", "0", "5", "10", "", "", "")
+
+# Updated annotation positions to avoid overlap
+ggplot(data, aes(x = Estimate, y = Condition)) +
+  geom_vline(xintercept = 0, linetype = "solid", color = "grey") +
+  geom_vline(xintercept = c(-20, -15, -10, -5, 5, 10), 
+             linetype = "dashed", color = "lightgrey") +
+  geom_errorbarh(aes(xmin = LowerCI, xmax = UpperCI),
+                 height = 0.2, color = "#9c89b8", linewidth = 0.8) +
+  geom_point(shape = 17, color = "#9c89b8", size = 2.5) +
+  theme_minimal() +
+  labs(title = "b. Physical Functioning", x = "", y = "") +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_text(size = 10, family = "Times New Roman"),
+    axis.text.x = element_text(size = 10, family = "Times New Roman"),
+    plot.title = element_text(size = 11, face = "bold", 
+                              family = "Times New Roman", hjust = -0.85),
+    text = element_text(family = "Times New Roman")
+  ) +
+  scale_x_continuous(breaks = custom_breaks, labels = custom_labels, limits = x_limits) +
+  annotate("text", x = 17, y = data$Condition, label = data$Estimate_Label, 
+           hjust = 0.5, family = "Times New Roman", size = 3) +
+  annotate("text", x = 27, y = data$Condition, label = data$CI_Label, 
+           hjust = 0.5, family = "Times New Roman", size = 3) +
+  # Annotate the p-values
+  annotate("text", x = 37, y = data$Condition, label = data$Pvalue, 
+           hjust = 0.5, family = "Times New Roman", size = 3)
+```
+
+
+```{r forest_mh_vs_condition, fig.width=7.5, fig.height=2.5, fig.align='center', out.width='100%', dpi=600, echo = F, message = F, warning = F}
+# Create a fictional dataset
+data <- data.frame(
+  Condition = c('Has arthritis history vs. No arthritis history -', 
+                'Has asthma history vs. No asthma hisotry -',
+                'Has bronchitis history vs. No bronchitis history -',
+                'Has diabetes history vs. No diabetes history -',
+                'Has heart disease history vs. No heart disease history -',
+                'Has hypertension history vs. No hypertension history -',
+                'Has osteoporosis history vs. No osteoporosis history -',
+                'Has stroke history vs. No stroke history -',
+                'Has thrombosis history vs. No thrombosis history -'
+                ),
+  Estimate = c(-4.37, -0.92, -2.42, -1.02, -4.11, -1.66, -3.04, 0.88, -1.15),
+  LowerCI = c(-6.15, -2.75, -4.17, -3.25, -6.5, -3.32, -5.17, -2.96, -3.76),
+  UpperCI = c(-2.6, 0.92, -0.67, 1.2, -1.72, 0.01, -0.91, 4.73, 1.46),
+  Pvalue = c('< 0.01', '0.33', '0.01', '0.37', '< 0.01', 
+             '0.05', '< 0.01', '0.65', '0.39')
+)
+
+# Reorder the conditions for plotting
+data <- data %>%
+  mutate(Condition = factor(Condition, levels = rev(Condition)))
+
+# Add a column for the text label of Estimate and CI
+data <- data %>%
+  mutate(
+    Estimate_Label = sprintf("%.2f", Estimate),
+    CI_Label = sprintf("(%.2f, %.2f)", LowerCI, UpperCI)
+  )
+
+data[is.na(data)] <- 0
+
+# Define custom breaks and labels for the x-axis
+x_limits <- c(-10, 40)
+custom_breaks <- c( -10, -5, 0, 5, 10, 15, 20, 40)
+custom_labels <- c("-10", "-5", "0", "5", "10", "", "", "")
+
+# Updated annotation positions to avoid overlap
+ggplot(data, aes(x = Estimate, y = Condition)) +
+  geom_vline(xintercept = 0, linetype = "solid", color = "grey") +
+  geom_vline(xintercept = c(-20, -15, -10, -5, 5, 10), 
+             linetype = "dashed", color = "lightgrey") +
+  geom_errorbarh(aes(xmin = LowerCI, xmax = UpperCI),
+                 height = 0.2, color = "#9c89b8", linewidth = 0.8) +
+  geom_point(shape = 17, color = "#9c89b8", size = 2.5) +
+  theme_minimal() +
+  labs(title = "c. Mental Health", x = "", y = "") +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_text(size = 10, family = "Times New Roman"),
+    axis.text.x = element_text(size = 10, family = "Times New Roman"),
+    plot.title = element_text(size = 11, face = "bold", 
+                              family = "Times New Roman", hjust = -0.85),
+    text = element_text(family = "Times New Roman")
+  ) +
+  scale_x_continuous(breaks = custom_breaks, labels = custom_labels, limits = x_limits) +
+  annotate("text", x = 17, y = data$Condition, label = data$Estimate_Label, 
+           hjust = 0.5, family = "Times New Roman", size = 3) +
+  annotate("text", x = 27, y = data$Condition, label = data$CI_Label, 
+           hjust = 0.5, family = "Times New Roman", size = 3) +
+  # Annotate the p-values
+  annotate("text", x = 37, y = data$Condition, label = data$Pvalue, 
+           hjust = 0.5, family = "Times New Roman", size = 3)
+```
+
+
+```{r forest_vt_vs_condition, fig.width=7.5, fig.height=2.5, fig.align='center', out.width='100%', dpi=600, echo = F, message = F, warning = F}
+# Create a fictional dataset
+data <- data.frame(
+  Condition = c('Has arthritis history vs. No arthritis history -', 
+                'Has asthma history vs. No asthma hisotry -',
+                'Has bronchitis history vs. No bronchitis history -',
+                'Has diabetes history vs. No diabetes history -',
+                'Has heart disease history vs. No heart disease history -',
+                'Has hypertension history vs. No hypertension history -',
+                'Has osteoporosis history vs. No osteoporosis history -',
+                'Has stroke history vs. No stroke history -',
+                'Has thrombosis history vs. No thrombosis history -'
+                ),
+  Estimate = c(-6.48, -3.94, -6.11, -1.33, -4.88, -4.21, -2.63, 2.41, -4.63),
+  LowerCI = c(-8.67, -6.21, -8.27, -4.08, -7.84, -6.27, -5.27, -2.35, -7.85),
+  UpperCI = c(-4.28, -1.68, -3.96, 1.43, -1.92, -2.16, 0.02, 7.17, -1.41),
+  Pvalue = c('< 0.01', '< 0.01', '< 0.01', '0.35', '< 0.01', 
+             '< 0.01', '0.05', '0.32', '< 0.01')
+)
+
+# Reorder the conditions for plotting
+data <- data %>%
+  mutate(Condition = factor(Condition, levels = rev(Condition)))
+
+# Add a column for the text label of Estimate and CI
+data <- data %>%
+  mutate(
+    Estimate_Label = sprintf("%.2f", Estimate),
+    CI_Label = sprintf("(%.2f, %.2f)", LowerCI, UpperCI)
+  )
+
+data[is.na(data)] <- 0
+
+# Define custom breaks and labels for the x-axis
+x_limits <- c(-10, 40)
+custom_breaks <- c( -10, -5, 0, 5, 10, 15, 20, 40)
+custom_labels <- c("-10", "-5", "0", "5", "10", "", "", "")
+
+# Updated annotation positions to avoid overlap
+ggplot(data, aes(x = Estimate, y = Condition)) +
+  geom_vline(xintercept = 0, linetype = "solid", color = "grey") +
+  geom_vline(xintercept = c(-20, -15, -10, -5, 5, 10), 
+             linetype = "dashed", color = "lightgrey") +
+  geom_errorbarh(aes(xmin = LowerCI, xmax = UpperCI),
+                 height = 0.2, color = "#9c89b8", linewidth = 0.8) +
+  geom_point(shape = 17, color = "#9c89b8", size = 2.5) +
+  theme_minimal() +
+  labs(title = "d. Vitality", x = "", y = "") +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_text(size = 10, family = "Times New Roman"),
+    axis.text.x = element_text(size = 10, family = "Times New Roman"),
+    plot.title = element_text(size = 11, face = "bold", 
+                              family = "Times New Roman", hjust = -0.85),
+    text = element_text(family = "Times New Roman")
+  ) +
+  scale_x_continuous(breaks = custom_breaks, labels = custom_labels, limits = x_limits) +
+  annotate("text", x = 17, y = data$Condition, label = data$Estimate_Label, 
+           hjust = 0.5, family = "Times New Roman", size = 3) +
+  annotate("text", x = 27, y = data$Condition, label = data$CI_Label, 
+           hjust = 0.5, family = "Times New Roman", size = 3) +
+  # Annotate the p-values
+  annotate("text", x = 37, y = data$Condition, label = data$Pvalue, 
+           hjust = 0.5, family = "Times New Roman", size = 3)
+```
+
+```{r forest_bp_vs_condition, fig.width=7.5, fig.height=2.5, fig.align='center', out.width='100%', dpi=600, echo = F, message = F, warning = F}
+# Create a fictional dataset
+data <- data.frame(
+  Condition = c('Has arthritis history vs. No arthritis history -', 
+                'Has asthma history vs. No asthma hisotry -',
+                'Has bronchitis history vs. No bronchitis history -',
+                'Has diabetes history vs. No diabetes history -',
+                'Has heart disease history vs. No heart disease history -',
+                'Has hypertension history vs. No hypertension history -',
+                'Has osteoporosis history vs. No osteoporosis history -',
+                'Has stroke history vs. No stroke history -',
+                'Has thrombosis history vs. No thrombosis history -'
+                ),
+  Estimate = c(-13.26, -4.48, -6.45, -1.46, -3.59, -6.19, -4.67, 3.58, -5.78),
+  LowerCI = c(-15.69, -7.05, -8.89, -4.59, -6.96, -8.52, -7.66, -1.82, -9.44),
+  UpperCI = c(-10.82, -1.91, -4.00, 1.67, -0.23, -3.87, -1.67, 8.98, -2.13),
+  Pvalue = c('< 0.01', '< 0.01', '< 0.01', '0.36', '0.04', 
+             '< 0.01', '< 0.01', '0.19', '< 0.01')
+)
+
+# Reorder the conditions for plotting
+data <- data %>%
+  mutate(Condition = factor(Condition, levels = rev(Condition)))
+
+# Add a column for the text label of Estimate and CI
+data <- data %>%
+  mutate(
+    Estimate_Label = sprintf("%.2f", Estimate),
+    CI_Label = sprintf("(%.2f, %.2f)", LowerCI, UpperCI)
+  )
+
+data[is.na(data)] <- 0
+
+# Define custom breaks and labels for the x-axis
+x_limits <- c(-20, 40)
+custom_breaks <- c(-20, -15, -10, -5, 0, 5, 10, 15, 20, 40)
+custom_labels <- c("-20", "-15", "-10", "-5", "0", "5", "10", "", "", "")
+
+# Updated annotation positions to avoid overlap
+ggplot(data, aes(x = Estimate, y = Condition)) +
+  geom_vline(xintercept = 0, linetype = "solid", color = "grey") +
+  geom_vline(xintercept = c(-20, -15, -10, -5, 5, 10), 
+             linetype = "dashed", color = "lightgrey") +
+  geom_errorbarh(aes(xmin = LowerCI, xmax = UpperCI),
+                 height = 0.2, color = "#9c89b8", linewidth = 0.8) +
+  geom_point(shape = 17, color = "#9c89b8", size = 2.5) +
+  theme_minimal() +
+  labs(title = "e. Bodily Pain", x = "", y = "") +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.y = element_text(size = 10, family = "Times New Roman"),
+    axis.text.x = element_text(size = 10, family = "Times New Roman"),
+    plot.title = element_text(size = 11, face = "bold", 
+                              family = "Times New Roman", hjust = -0.85),
+    text = element_text(family = "Times New Roman")
+  ) +
+  scale_x_continuous(breaks = custom_breaks, labels = custom_labels, limits = x_limits) +
+  annotate("text", x = 16, y = data$Condition, label = data$Estimate_Label, 
+           hjust = 0.5, family = "Times New Roman", size = 3) +
+  annotate("text", x = 27, y = data$Condition, label = data$CI_Label, 
+           hjust = 0.5, family = "Times New Roman", size = 3) +
+  # Annotate the p-values
+  annotate("text", x = 38, y = data$Condition, label = data$Pvalue, 
+           hjust = 0.5, family = "Times New Roman", size = 3)
+```
+
+
+

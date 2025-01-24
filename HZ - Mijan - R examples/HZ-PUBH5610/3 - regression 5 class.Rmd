@@ -1,0 +1,873 @@
+---
+title: "Untitled"
+author: "Haoyu Zhang"
+date: "2024-09-24"
+output: html_document
+---
+
+```{r pkg,include=FALSE,message=F,warning=F}
+# setting up the environment
+library(knitr)
+library(htmltools)
+library(tinytex)
+library(dplyr)
+library(tidyverse)
+library(readr)
+library(haven)
+library(ggplot2)
+library(reshape2)
+library(gridExtra)
+library(survival)
+library(data.table)
+library(purrr)
+library(skimr)
+library(tableone)
+library(poLCA)
+library(jtools)
+library(car)
+# package 'poLCA' contains function 'MASS::select()', conflicting with 'dplyr::select()' under package 'dplyr'. Hence, we mask MASS::select explicitly, and set 'dplyr::select' as default.
+select <- dplyr::select
+library(tidyr)
+library(AER)
+```
+
+
+```{r import_data_&_data_cleaning, include = F, message = F, warning = F}
+# import clean data set with classes
+case <- read_csv("C:/Users/user/Desktop/PHBH5610/case_class_5")
+
+# class modification
+case <- case %>%
+  mutate(class = case_when(
+    class == 1 ~ 2,                  # Rename class 1 to 4
+    class == 2 ~ 1,                  # Rename class 2 to 1
+    class == 3 ~ 5,                  # Rename class 3 to 2
+    class == 4 ~ 4,                  # Rename class 4 to 3
+    class == 5 ~ 3
+  ))
+
+# class grouping
+# 1. combine class 1 and class 4, rename to group 3+4
+# 2. rename class 2 to class 1, class 3 to class 2
+case <- case %>%
+  mutate(cc = case_when(
+    class %in% c(4, 5) ~ "4+5",  # Combine class 1 and 4
+    class == 1 ~ "1",                 
+    class == 2 ~ "2",
+    class == 3 ~ "3"
+  ))
+
+case$arthritis_his <- with(case, ifelse(is.na(arthritis_his), 0, arthritis_his))
+
+# factor the variables
+varsToFactor <- c('bmi', 'marital', 'smoke', 'area_residence', 
+                  'qualification', 'income','diabetes_his', 
+                  'hypertension_his', 'heart_disease_his', 
+                  'low_iron_his', 'osteoporosis_his', 'stroke_his', 
+                  'thrombosis_his', 'asthma_his', 'arthritis_his', 
+                  'bronchitis_his', 'breast_cancer','cervical_cancer', 
+                  'lung_cancer', 'bowel_cancer', 'other_cancer', 
+                  'country_of_birth', 'class', 'cc')
+case[varsToFactor] <- lapply(case[varsToFactor], factor)
+
+case$bmi <- factor(case$bmi, levels = c(2,1,3,4))
+case$income <- factor(case$income, levels = c(3,2,1))
+```
+
+
+```{r distribution_y, echo = F, message = F, warning = F}
+# Function to generate and display histograms for multiple columns with mean and median lines
+plot_histograms <- function(data, columns) {
+  # List to store plots
+  plot_list <- list()
+  
+  # Loop through each column and generate plots
+  for (col in columns) {
+    # Calculate mean, median, and density
+    mean_col <- mean(data[[col]], na.rm = TRUE)
+    median_col <- median(data[[col]], na.rm = TRUE)
+    col_density <- density(data[[col]], na.rm = TRUE)
+    
+    # Create the plot
+    p <- ggplot(data, aes_string(x = col)) +
+      geom_histogram(aes(y = ..density..), binwidth = 5.0, fill = "steelblue", color = "white", alpha = 0.7) +
+      geom_density(color = "red", size = 1) +
+      geom_rug(sides = "b", color = "darkgrey") +
+      labs(title = paste(col), x = col, y = "Density") +
+      geom_vline(xintercept = mean_col, color = "yellow", linetype = 'solid', size = 1) +
+      geom_vline(xintercept = median_col, color = "green", linetype = 'dashed', size = 1) +
+      annotate("text", x = mean_col, y = max(col_density$y), 
+               label = paste("Mean:", round(mean_col, 2)), color = "blue", vjust = -2, hjust = -1) +
+      annotate("text", x = median_col, y = max(col_density$y) * 0.9, 
+               label = paste("Median:", round(median_col, 2)), color = "darkgreen", vjust = -2, hjust = -1) +
+      theme_minimal() +
+      theme(
+        panel.grid.major = element_line(color = "grey80"),
+        panel.grid.minor = element_line(color = "grey90"),
+        plot.title = element_text(size = 14, face = "bold")
+      )
+    
+    # Append the plot to the list
+    plot_list[[col]] <- p
+  }
+  
+  # Arrange all plots in a grid (2 rows and 4 columns)
+  grid.arrange(grobs = plot_list, ncol = 3)
+}
+
+# List of columns to plot
+columns_of_interest <- c("gh", "pf", "mh", "re", "rp", "sf", "bp", "vt")
+# plot_histograms(case, columns_of_interest)
+```
+
+
+```{r linearity_check_gh, echo = F, message = F, warning = F}
+par(mfrow=c(2,3))
+boxplot(gh ~ cc, data = case, main = 'gh', col = '#7fa832', xlab = 'Class'
+        , cex.main = 2)
+boxplot(pf ~ cc, data = case, main = 'pf', col = '#7fa832', xlab = 'Class'
+        , cex.main = 2)
+boxplot(mh ~ cc, data = case, main = 'mh', col = '#7fa832', xlab = 'Class'
+        , cex.main = 2)
+boxplot(bp ~ cc, data = case, main = 'bp', col = '#7fa832', xlab = 'Class'
+        , cex.main = 2)
+boxplot(vt ~ cc, data = case, main = 'vt', col = '#7fa832', xlab = 'Class'
+        , cex.main = 2)
+
+a <- ggplot(case, aes(x = cc, fill = factor(re))) +
+  geom_bar(position = "dodge") +
+  labs(title = "re",
+       x = "Class",
+       y = "Count",
+       fill = "re") +
+  theme_minimal()
+
+b <- ggplot(case, aes(x = cc, fill = factor(rp))) +
+  geom_bar(position = "dodge") +
+  labs(title = "rp",
+       x = "Class",
+       y = "Count",
+       fill = "rp") +
+  theme_minimal()
+
+c <- ggplot(case, aes(x = cc, fill = factor(sf))) +
+  geom_bar(position = "dodge") +
+  labs(title = "sf",
+       x = "Class",
+       y = "Count",
+       fill = "sf") +
+  theme_minimal()
+
+# grid.arrange(a,b,c, ncol = 2)
+
+rm(a,b,c)
+```
+
+
+```{r 5_class_reg_gh, echo = F, message = F, warning = F}
+# regression gh VS. class_______________________________________________________
+slr_gh_class_case <- lm(gh ~ cc, data = case) # n -46
+#summ(slr_gh_class_case)
+#Anova(slr_gh_class_case)
+
+mlr1_gh_class_case <- lm(gh ~ cc + age + bmi + area_residence + income + 
+                           marital + smoke + qualification + country_of_birth, 
+                         data = case) # n -317
+#summ(mlr1_gh_class_case, vifs = T, digits = 3)
+#Anova(mlr1_gh_class_case)
+
+mlr2_gh_class_case <- lm(gh ~ class + age + bmi + area_residence + income + 
+                           marital + smoke + qualification + country_of_birth, 
+                         data = case) # n -317
+#summ(mlr2_gh_class_case, vifs = T, digits = 3)
+#Anova(mlr2_gh_class_case)
+
+mlr3_gh_class_case <- lm(gh ~ cc + age + area_residence + income + marital +
+                           qualification + country_of_birth, data = case) # n -218
+#summ(mlr3_gh_class_case)
+#Anova(mlr3_gh_class_case)
+```
+
+
+```{r 5_class_reg_gh, echo = F, message = F, warning = F}
+# regression pf VS. class_______________________________________________________
+slr_pf_class_case <- lm(pf ~ cc, data = case) # n -46
+#summ(slr_pf_class_case)
+#Anova(slr_pf_class_case)
+
+mlr1_pf_class_case <- lm(pf ~ cc + age + bmi + area_residence + income + 
+                           marital + smoke + qualification + country_of_birth, 
+                         data = case) # n -317
+#summ(mlr1_pf_class_case, vifs = T, digits = 3)
+#Anova(mlr1_pf_class_case)
+
+mlr2_pf_class_case <- lm(pf ~ class + age + bmi + area_residence + income + 
+                           marital + smoke + qualification + country_of_birth, 
+                         data = case) # n -317
+#summ(mlr2_pf_class_case, vifs = T, digits = 3)
+#Anova(mlr2_pf_class_case)
+
+mlr3_pf_class_case <- lm(pf ~ cc + age + area_residence + income + marital +
+                           qualification + country_of_birth, data = case) # n -218
+#summ(mlr3_pf_class_case)
+#Anova(mlr3_pf_class_case)
+```
+
+
+```{r 5_class_reg_mh, echo = F, message = F, warning = F}
+# regression mh VS. class_______________________________________________________
+slr_mh_class_case <- lm(mh ~ cc, data = case) # n -46
+#summ(slr_mh_class_case)
+#Anova(slr_mh_class_case)
+
+mlr1_mh_class_case <- lm(mh ~ cc + age + bmi + area_residence + income + 
+                           marital + smoke + qualification + country_of_birth, 
+                         data = case) # n -317
+#summ(mlr1_mh_class_case, vifs = T, digits = 3)
+#Anova(mlr1_mh_class_case)
+
+mlr2_mh_class_case <- lm(mh ~ class + age + bmi + area_residence + income + 
+                           marital + smoke + qualification + country_of_birth, 
+                         data = case) # n -317
+#summ(mlr2_mh_class_case, vifs = T, digits = 3)
+#Anova(mlr2_mh_class_case)
+
+mlr3_mh_class_case <- lm(mh ~ cc + age + area_residence + income + marital +
+                           qualification + country_of_birth, data = case) # n -218
+#summ(mlr3_mh_class_case)
+#Anova(mlr3_mh_class_case)
+```
+
+
+```{r 5_class_reg_vt, echo = F, message = F, warning = F}
+# regression vt VS. class_______________________________________________________
+slr_vt_class_case <- lm(vt ~ cc, data = case) # n -46
+#summ(slr_vt_class_case)
+#Anova(slr_vt_class_case)
+
+mlr1_vt_class_case <- lm(vt ~ cc + age + bmi + area_residence + income + 
+                           marital + smoke + qualification + country_of_birth, 
+                         data = case) # n -317
+#summ(mlr1_vt_class_case, vifs = T, digits = 3)
+#Anova(mlr1_vt_class_case)
+
+mlr2_vt_class_case <- lm(vt ~ class + age + bmi + area_residence + income + 
+                           marital + smoke + qualification + country_of_birth, 
+                         data = case) # n -317
+#summ(mlr2_vt_class_case, vifs = T, digits = 3)
+#Anova(mlr2_vt_class_case)
+
+mlr3_vt_class_case <- lm(vt ~ cc + age + area_residence + income + marital +
+                           qualification + country_of_birth, data = case) # n -218
+#summ(mlr3_vt_class_case)
+#Anova(mlr3_vt_class_case)
+```
+
+
+```{r 5_class_reg_bp, echo = F, message = F, warning = F}
+# regression bp VS. class_______________________________________________________
+slr_bp_class_case <- lm(bp ~ cc, data = case) # n -46
+summ(slr_bp_class_case)
+Anova(slr_bp_class_case)
+
+mlr1_bp_class_case <- lm(bp ~ cc + age + bmi + area_residence + income + 
+                           marital + smoke + qualification + country_of_birth, 
+                         data = case) # n -317
+summ(mlr1_bp_class_case, vifs = T, digits = 3)
+Anova(mlr1_bp_class_case)
+
+mlr2_bp_class_case <- lm(bp ~ class + age + bmi + area_residence + income + 
+                           marital + smoke + qualification + country_of_birth, 
+                         data = case) # n -317
+#summ(mlr2_bp_class_case, vifs = T, digits = 3)
+#Anova(mlr2_bp_class_case)
+
+mlr3_bp_class_case <- lm(bp ~ cc + age + area_residence + income + marital +
+                           qualification + country_of_birth, data = case) # n -218
+summ(mlr3_bp_class_case)
+Anova(mlr3_bp_class_case)
+```
+
+
+```{r gh_removed_class_5, echo = F, message = F, warning = F}
+df <- subset(case, class != 5)
+
+slr2_gh_class_case <- lm(gh ~ class, data = case)
+#summ(slr2_gh_class_case)
+
+# gh
+mlr2_gh_class_case <- lm(gh ~ class + age + area_residence + income + 
+                           marital + qualification + country_of_birth, 
+                         data = case) # n -317
+#summ(mlr2_gh_class_case, vifs = T, digits = 3)
+#Anova(mlr2_gh_class_case)
+
+slr2_gh_rmc5 <- lm(gh ~ class, data = df)
+#summ(slr2_gh_rmc5)
+
+mlr_gh_rmc5 <- lm(gh ~ class + age + area_residence + income + 
+                           marital + qualification + country_of_birth, 
+                         data = df)
+#summ(mlr_gh_rmc5, vifs = T, digits = 3)
+#Anova(mlr_gh_rmc5)
+
+rm(slr2_gh_class_case, mlr2_gh_class_case, slr2_gh_rmc5, mlr_gh_rmc5)
+```
+
+```{r pf_removed_class_5, echo = F, message = F, warning = F}
+df <- subset(case, class != 5)
+
+#slr2_pf_class_case <- lm(pf ~ class, data = case)
+#summ(slr2_pf_class_case)
+
+# pf
+mlr2_pf_class_case <- lm(pf ~ class + age + area_residence + income + 
+                           marital + qualification + country_of_birth, 
+                         data = case) # n -317
+#summ(mlr2_pf_class_case, vifs = T, digits = 3)
+#Anova(mlr2_pf_class_case)
+
+slr2_pf_rmc5 <- lm(pf ~ class, data = df)
+#summ(slr2_pf_rmc5)
+
+mlr_pf_rmc5 <- lm(pf ~ class + age + area_residence + income + 
+                           marital + qualification + country_of_birth, 
+                         data = df)
+#summ(mlr_pf_rmc5, vifs = T, digits = 3)
+#Anova(mlr_pf_rmc5)
+
+rm(slr2_pf_class_case, mlr2_pf_class_case, slr2_pf_rmc5, mlr_pf_rmc5)
+```
+
+```{r mh_removed_class_5, echo = F, message = F, warning = F}
+df <- subset(case, class != 5)
+
+slr2_mh_class_case <- lm(mh ~ class, data = case)
+#summ(slr2_mh_class_case)
+
+# mh
+mlr2_mh_class_case <- lm(mh ~ class + age + area_residence + income + 
+                           marital + qualification + country_of_birth, 
+                         data = case) # n -317
+#summ(mlr2_mh_class_case, vifs = T, digits = 2)
+#Anova(mlr2_mh_class_case)
+
+slr2_mh_rmc5 <- lm(mh ~ class, data = df)
+#summ(slr2_mh_rmc5)
+
+mlr_mh_rmc5 <- lm(mh ~ class + age + area_residence + income + 
+                           marital + qualification + country_of_birth, 
+                         data = df)
+#summ(mlr_mh_rmc5, vifs = T, digits = 2)
+#Anova(mlr_mh_rmc5)
+
+rm(slr2_mh_class_case, mlr2_mh_class_case, slr2_mh_rmc5, mlr_mh_rmc5)
+```
+
+
+```{r vt_removed_class_5, echo = F, message = F, warning = F}
+df <- subset(case, class != 5)
+
+slr2_vt_class_case <- lm(vt ~ class, data = case)
+#summ(slr2_vt_class_case)
+
+# vt
+mlr2_vt_class_case <- lm(vt ~ class + age + area_residence + income + 
+                           marital + qualification + country_of_birth, 
+                         data = case) # n -317
+#summ(mlr2_vt_class_case, vifs = T, digits = 3)
+#Anova(mlr2_vt_class_case)
+
+slr2_vt_rmc5 <- lm(vt ~ class, data = df)
+#summ(slr2_vt_rmc5)
+
+mlr_vt_rmc5 <- lm(vt ~ class + age + area_residence + income + 
+                           marital + qualification + country_of_birth, 
+                         data = df)
+#summ(mlr_vt_rmc5, vifs = T, digits = 3)
+#Anova(mlr_vt_rmc5)
+
+rm(slr2_vt_class_case, mlr2_vt_class_case, slr2_vt_rmc5, mlr_vt_rmc5)
+```
+
+```{r bp_removed_class_5, echo = F, message = F, warning = F}
+df <- subset(case, class != 5)
+
+slr2_bp_class_case <- lm(bp ~ class, data = case)
+#summ(slr2_bp_class_case)
+
+# bp
+mlr2_bp_class_case <- lm(bp ~ class + age + area_residence + income + 
+                           marital + qualification + country_of_birth, 
+                         data = case) # n -317
+#summ(mlr2_bp_class_case, vifs = T, digits = 3)
+#Anova(mlr2_bp_class_case)
+
+slr2_bp_rmc5 <- lm(bp ~ class, data = df)
+#summ(slr2_bp_rmc5)
+
+mlr_bp_rmc5 <- lm(bp ~ class + age + area_residence + income + 
+                           marital + qualification + country_of_birth, 
+                         data = df)
+#summ(mlr_bp_rmc5, vifs = T, digits = 3)
+#Anova(mlr_bp_rmc5)
+
+rm(slr2_bp_class_case, mlr2_bp_class_case, slr2_bp_rmc5, mlr_bp_rmc5)
+```
+
+```{r sf_1, include = F, message = F, warning = F}
+slr_sf_class_case <- lm(sf ~ cc, data = case) # n -3
+#summ(slr_sf_class_case)
+
+# no transformation
+mlr1_sf_class_case <- lm(sf ~ cc + age + bmi + area_residence + income + 
+                           marital + smoke + qualification + country_of_birth, 
+                         data = case) # n -317
+#summ(mlr1_sf_class_case, vifs = T, digits = 3)
+#Anova(mlr1_sf_class_case)
+
+# log transformation
+case <- case %>%
+  mutate(sf_adjusted = ifelse(sf == 0, 0.001, sf),  
+         logsf = log(sf_adjusted))
+
+mlr2_sf_class_case <- lm(logsf ~ cc + age + bmi + area_residence + income + 
+                           marital + smoke + qualification + country_of_birth, 
+                         data = case) # n -317
+#summ(mlr2_sf_class_case, vifs = T, digits = 3)
+#Anova(mlr2_sf_class_case)
+
+# square root transformation
+case <- case %>%
+  mutate(sf_sqrt = sqrt(sf))
+
+mlr3_sf_class_case <- lm(sf_sqrt ~ cc + age + bmi + area_residence + income + 
+                           marital + smoke + qualification + country_of_birth, 
+                         data = case) # n -317
+#summ(mlr3_sf_class_case, vifs = T, digits = 3)
+#Anova(mlr3_sf_class_case)
+
+# box-cox transformation
+mlr4_sf_class_case <- lm(sf_adjusted ~ cc + age + bmi + area_residence + income + 
+                           marital + smoke + qualification + country_of_birth, 
+                         data = case)
+#bc <- boxcox(mlr4_sf_class_case)
+#lambda <- bc$x[which.max(bc$y)]
+
+case <- case %>%
+  mutate(sf_bc = (sf^lambda - 1) / lambda)
+
+mlr5_sf_class_case <- lm(sf_bc ~ cc + age + bmi + area_residence + income + 
+                           marital + smoke + qualification + country_of_birth, 
+                         data = case)
+#summ(mlr5_sf_class_case, vifs = T, digits = 3)
+#Anova(mlr5_sf_class_case)
+
+tobit_model_1 <- tobit(sf ~ cc + age + area_residence + income + marital +
+                           qualification + country_of_birth, 
+                      left = 0, right = 100, data = case)
+summary(tobit_model_1) 
+tobit_model_2 <- tobit(sf ~ class + age + area_residence + income + marital +
+                           qualification + country_of_birth, 
+                      left = 0, right = 100, data = case)
+summary(tobit_model_2) 
+```
+
+
+```{r sf_bi, echo = F, message = F, warning = F}
+case <- case %>%
+  mutate(sf_bi = case_when(
+    sf >= 83.8 ~ 1,
+    sf < 83.8 ~ 0
+  ))
+
+df <- subset(case, class != 5)
+
+slogr_sf_class_case <- glm(sf_bi ~ class, data = case, family = 'binomial')
+#summ(slogr_sf_class_case, digits = 3)
+#round(exp(coef(slogr_sf_class_case)),digits = 2)
+
+slogr_sf_cc_case <- glm(sf_bi ~ cc, data = case, family = 'binomial')
+#summ(slogr_sf_cc_case, digits = 3)
+#round(exp(coef(slogr_sf_cc_case)),digits = 2)
+
+slogr_sf_rmc5 <- glm(sf_bi ~ class, data = df, family = 'binomial')
+#summ(slogr_sf_rmc5, digits = 3)
+#round(exp(coef(slogr_sf_rmc5)),digits = 2)
+
+mlogr_sf_class_case <- glm(sf_bi ~ class + age + area_residence + income + 
+                             marital + qualification + country_of_birth,
+                           data = case, family = 'binomial')
+#summ(mlogr_sf_class_case, digits = 3)
+#Anova(mlogr_sf_class_case)
+#round(exp(coef(mlogr_sf_class_case)),digits = 2)
+
+mlogr_sf_cc_case <- glm(sf_bi ~ cc + age + area_residence + income + 
+                             marital + qualification + country_of_birth,
+                           data = case, family = 'binomial')
+#summ(mlogr_sf_cc_case, digits = 3)
+#Anova(mlogr_sf_cc_case)
+#round(exp(coef(mlogr_sf_cc_case)),digits = 2)
+
+mlogr_sf_rm5c <- glm(sf_bi ~ class + age + area_residence + income + 
+                             marital + qualification + country_of_birth,
+                           data = df, family = 'binomial')
+summ(mlogr_sf_rm5c, digits = 3)
+Anova(mlogr_sf_rm5c)
+round(exp(coef(mlogr_sf_rm5c)),digits = 2)
+```
+
+
+```{r sf_vs_conditions, echo = F, message = F, warning = F}
+slogr_sf_arthritis <- glm(sf_bi ~ arthritis_his, data = df, family = 'binomial')
+#summ(slogr_sf_arthritis, digits = 3)
+#round(exp(coef(slogr_sf_arthritis)),digits = 2)
+
+mlogr_sf_arthritis <- glm(sf_bi ~ arthritis_his + age + area_residence + income + 
+                             marital + qualification + country_of_birth,
+                           data = case, family = 'binomial')
+#summ(mlogr_sf_arthritis, digits = 3)
+#Anova(mlogr_sf_arthritis)
+#round(exp(coef(mlogr_sf_arthritis)),digits = 2)
+
+slogr_sf_asthma <- glm(sf_bi ~ asthma_his, data = df, family = 'binomial')
+#summ(slogr_sf_asthma, digits = 3)
+#round(exp(coef(slogr_sf_asthma)),digits = 2)
+
+mlogr_sf_asthma <- glm(sf_bi ~ asthma_his + age + area_residence + income + 
+                             marital + qualification + country_of_birth,
+                           data = case, family = 'binomial')
+#summ(mlogr_sf_asthma, digits = 3)
+#Anova(mlogr_sf_asthma)
+#round(exp(coef(mlogr_sf_asthma)),digits = 2)
+
+slogr_sf_bronchitis <- glm(sf_bi ~ bronchitis_his, data = df, family = 'binomial')
+#summ(slogr_sf_bronchitis, digits = 3)
+#round(exp(coef(slogr_sf_bronchitis)),digits = 2)
+
+mlogr_sf_bronchitis <- glm(sf_bi ~ bronchitis_his + age + area_residence + income + 
+                             marital + qualification + country_of_birth,
+                           data = case, family = 'binomial')
+#summ(mlogr_sf_bronchitis, digits = 3)
+#Anova(mlogr_sf_bronchitis)
+#round(exp(coef(mlogr_sf_bronchitis)),digits = 2)
+
+slogr_sf_diabetes <- glm(sf_bi ~ diabetes_his, data = df, family = 'binomial')
+#summ(slogr_sf_diabetes, digits = 3)
+#round(exp(coef(slogr_sf_diabetes)),digits = 2)
+
+mlogr_sf_diabetes <- glm(sf_bi ~ diabetes_his + age + area_residence + income + 
+                             marital + qualification + country_of_birth,
+                           data = case, family = 'binomial')
+#summ(mlogr_sf_diabetes, digits = 3)
+#Anova(mlogr_sf_diabetes)
+#round(exp(coef(mlogr_sf_diabetes)),digits = 2)
+
+slogr_sf_heart_disease <- glm(sf_bi ~ heart_disease_his, 
+                              data = df, family = 'binomial')
+#summ(slogr_sf_heart_disease, digits = 3)
+#round(exp(coef(slogr_sf_heart_disease)),digits = 2)
+
+mlogr_sf_heart_disease <- glm(sf_bi ~ heart_disease_his + age + area_residence
+                              + income + marital + qualification 
+                              + country_of_birth,
+                           data = case, family = 'binomial')
+#summ(mlogr_sf_heart_disease, digits = 3)
+#Anova(mlogr_sf_heart_disease)
+#round(exp(coef(mlogr_sf_heart_disease)),digits = 2)
+
+slogr_sf_hypertension <- glm(sf_bi ~ hypertension_his, data = df, family = 'binomial')
+#summ(slogr_sf_hypertension, digits = 3)
+#round(exp(coef(slogr_sf_hypertension)),digits = 2)
+
+mlogr_sf_hypertension <- glm(sf_bi ~ hypertension_his + age + area_residence + income + 
+                             marital + qualification + country_of_birth,
+                           data = case, family = 'binomial')
+#summ(mlogr_sf_hypertension, digits = 3)
+#Anova(mlogr_sf_hypertension)
+#round(exp(coef(mlogr_sf_hypertension)),digits = 2)
+
+slogr_sf_osteoporosis <- glm(sf_bi ~ osteoporosis_his, data = df, family = 'binomial')
+#summ(slogr_sf_osteoporosis, digits = 3)
+#round(exp(coef(slogr_sf_osteoporosis)),digits = 2)
+
+mlogr_sf_osteoporosis <- glm(sf_bi ~ osteoporosis_his + age + area_residence + income + 
+                             marital + qualification + country_of_birth,
+                           data = case, family = 'binomial')
+#summ(mlogr_sf_osteoporosis, digits = 3)
+#Anova(mlogr_sf_osteoporosis)
+#round(exp(coef(mlogr_sf_osteoporosis)),digits = 2)
+
+slogr_sf_stroke <- glm(sf_bi ~ stroke_his, data = df, family = 'binomial')
+#summ(slogr_sf_stroke, digits = 3)
+#round(exp(coef(slogr_sf_stroke)),digits = 2)
+
+mlogr_sf_stroke <- glm(sf_bi ~ stroke_his + age + area_residence + income + 
+                             marital + qualification + country_of_birth,
+                           data = case, family = 'binomial')
+#summ(mlogr_sf_stroke, digits = 3)
+#Anova(mlogr_sf_stroke)
+#round(exp(coef(mlogr_sf_stroke)),digits = 2)
+
+slogr_sf_thrombosis <- glm(sf_bi ~ thrombosis_his, data = df, family = 'binomial')
+#summ(slogr_sf_thrombosis, digits = 3)
+#round(exp(coef(slogr_sf_thrombosis)),digits = 2)
+
+mlogr_sf_thrombosis <- glm(sf_bi ~ thrombosis_his + age + area_residence + income + 
+                             marital + qualification + country_of_birth,
+                           data = case, family = 'binomial')
+#summ(mlogr_sf_thrombosis, digits = 3)
+#Anova(mlogr_sf_thrombosis)
+#round(exp(coef(mlogr_sf_thrombosis)),digits = 2)
+
+```
+
+
+```{r}
+model <- lm(bp ~ class + age + area_residence + income + 
+                           marital + qualification + country_of_birth, 
+                         data = case) # n -317
+summ(model, confint = T, digits = 2)
+```
+
+```{r gh_vs_conditions, echo = F, message = F, warning = F}
+mlr_gh_art_case <- lm(gh ~ arthritis_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_gh_art_case, confint = T, vifs = T, digits = 2)
+
+mlr_gh_ast_case <- lm(gh ~ asthma_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_gh_ast_case, confint = T, vifs = T, digits = 2)
+
+mlr_gh_bro_case <- lm(gh ~ bronchitis_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_gh_bro_case, confint = T, vifs = T, digits = 2)
+
+mlr_gh_dia_case <- lm(gh ~ diabetes_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_gh_dia_case, confint = T, vifs = T, digits = 2)
+
+mlr_gh_hd_case <- lm(gh ~ heart_disease_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_gh_hd_case, confint = T, vifs = T, digits = 2)
+
+mlr_gh_hyp_case <- lm(gh ~ hypertension_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_gh_hyp_case, confint = T, vifs = T, digits = 2)
+
+mlr_gh_ost_case <- lm(gh ~ osteoporosis_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_gh_ost_case, confint = T, vifs = T, digits = 2)
+
+mlr_gh_str_case <- lm(gh ~ stroke_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_gh_str_case, confint = T, vifs = T, digits = 2)
+
+mlr_gh_thr_case <- lm(gh ~ thrombosis_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_gh_thr_case, confint = T, vifs = T, digits = 2)
+```
+
+```{r pf_vs_conditions, echo = F, message = F, warning = F}
+mlr_pf_art_case <- lm(pf ~ arthritis_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_pf_art_case, confint = T, vifs = T, digits = 2)
+
+mlr_pf_ast_case <- lm(pf ~ asthma_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_pf_ast_case, confint = T, vifs = T, digits = 2)
+
+mlr_pf_bro_case <- lm(pf ~ bronchitis_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_pf_bro_case, confint = T, vifs = T, digits = 2)
+
+mlr_pf_dia_case <- lm(pf ~ diabetes_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_pf_dia_case, confint = T, vifs = T, digits = 2)
+
+mlr_pf_hd_case <- lm(pf ~ heart_disease_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_pf_hd_case, confint = T, vifs = T, digits = 2)
+
+mlr_pf_hyp_case <- lm(pf ~ hypertension_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_pf_hyp_case, confint = T, vifs = T, digits = 2)
+
+mlr_pf_ost_case <- lm(pf ~ osteoporosis_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_pf_ost_case, confint = T, vifs = T, digits = 2)
+
+mlr_pf_str_case <- lm(pf ~ stroke_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_pf_str_case, confint = T, vifs = T, digits = 2)
+
+mlr_pf_thr_case <- lm(pf ~ thrombosis_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_pf_thr_case, confint = T, vifs = T, digits = 2)
+```
+
+
+```{r mh_vs_conditions, echo = F, message = F, warning = F}
+mlr_mh_art_case <- lm(mh ~ arthritis_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+summ(mlr_mh_art_case, confint = T, vifs = T, digits = 2)
+
+mlr_mh_ast_case <- lm(mh ~ asthma_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+summ(mlr_mh_ast_case, confint = T, vifs = T, digits = 2)
+
+mlr_mh_bro_case <- lm(mh ~ bronchitis_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+summ(mlr_mh_bro_case, confint = T, vifs = T, digits = 2)
+
+mlr_mh_dia_case <- lm(mh ~ diabetes_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+summ(mlr_mh_dia_case, confint = T, vifs = T, digits = 2)
+
+mlr_mh_hd_case <- lm(mh ~ heart_disease_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+summ(mlr_mh_hd_case, confint = T, vifs = T, digits = 2)
+
+mlr_mh_hyp_case <- lm(mh ~ hypertension_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+summ(mlr_mh_hyp_case, confint = T, vifs = T, digits = 2)
+
+mlr_mh_ost_case <- lm(mh ~ osteoporosis_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+summ(mlr_mh_ost_case, confint = T, vifs = T, digits = 2)
+
+mlr_mh_str_case <- lm(mh ~ stroke_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+summ(mlr_mh_str_case, confint = T, vifs = T, digits = 2)
+
+mlr_mh_thr_case <- lm(mh ~ thrombosis_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+summ(mlr_mh_thr_case, confint = T, vifs = T, digits = 2)
+```
+
+
+```{r vt_vs_conditions, echo = F, message = F, warning = F}
+mlr_vt_art_case <- lm(vt ~ arthritis_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_vt_art_case, confint = T, vifs = T, digits = 2)
+
+mlr_vt_ast_case <- lm(vt ~ asthma_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_vt_ast_case, confint = T, vifs = T, digits = 2)
+
+mlr_vt_bro_case <- lm(vt ~ bronchitis_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_vt_bro_case, confint = T, vifs = T, digits = 2)
+
+mlr_vt_dia_case <- lm(vt ~ diabetes_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_vt_dia_case, confint = T, vifs = T, digits = 2)
+
+mlr_vt_hd_case <- lm(vt ~ heart_disease_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_vt_hd_case, confint = T, vifs = T, digits = 2)
+
+mlr_vt_hyp_case <- lm(vt ~ hypertension_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_vt_hyp_case, confint = T, vifs = T, digits = 2)
+
+mlr_vt_ost_case <- lm(vt ~ osteoporosis_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_vt_ost_case, confint = T, vifs = T, digits = 2)
+
+mlr_vt_str_case <- lm(vt ~ stroke_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_vt_str_case, confint = T, vifs = T, digits = 2)
+
+mlr_vt_thr_case <- lm(vt ~ thrombosis_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_vt_thr_case, confint = T, vifs = T, digits = 2)
+```
+
+
+```{r bp_vs_conditions, echo = F, message = F, warning = F}
+mlr_bp_art_case <- lm(bp ~ arthritis_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_bp_art_case, confint = T, vifs = T, digits = 2)
+
+mlr_bp_ast_case <- lm(bp ~ asthma_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_bp_ast_case, confint = T, vifs = T, digits = 2)
+
+mlr_bp_bro_case <- lm(bp ~ bronchitis_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_bp_bro_case, confint = T, vifs = T, digits = 2)
+
+mlr_bp_dia_case <- lm(bp ~ diabetes_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_bp_dia_case, confint = T, vifs = T, digits = 2)
+
+mlr_bp_hd_case <- lm(bp ~ heart_disease_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_bp_hd_case, confint = T, vifs = T, digits = 2)
+
+mlr_bp_hyp_case <- lm(bp ~ hypertension_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_bp_hyp_case, confint = T, vifs = T, digits = 2)
+
+mlr_bp_ost_case <- lm(bp ~ osteoporosis_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_bp_ost_case, confint = T, vifs = T, digits = 2)
+
+mlr_bp_str_case <- lm(bp ~ stroke_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_bp_str_case, confint = T, vifs = T, digits = 2)
+
+mlr_bp_thr_case <- lm(bp ~ thrombosis_his + age + area_residence + income + 
+                        marital + qualification + country_of_birth,
+                      data = case) # n -218
+#summ(mlr_bp_thr_case, confint = T, vifs = T, digits = 2)
+```
+
+
+
+
